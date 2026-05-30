@@ -1,7 +1,0 @@
-filetype: testlang_signature
-
-detect:
-    signature: "^SIGNATURE-MARK"
-
-rules:
-    - statement: "\\bsig\\b"

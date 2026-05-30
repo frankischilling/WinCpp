@@ -1,7 +1,0 @@
-filetype: testlang_header
-
-detect:
-    header: "^#!.*testlang_header"
-
-rules:
-    - statement: "\\bmarker\\b"
