@@ -1,48 +1,166 @@
 # WinCpp
 
-A simple text editor for Windows, built with C++ and Win32. It uses [Scintilla](https://www.scintilla.org/) for editing.
+WinCpp is a classic Win32 text editor written in C++. It uses Scintilla for the
+editing surface and keeps the overall feel of a compact late-2000s Windows
+utility/editor: menu bar, toolbar, tabs, split panes, project tree, output pane,
+dialogs, and status bar.
 
 ![Local screenshot](img/demo.png)
 
-## Features
+## Highlights
 
-- **Tabs** - Multiple open files, drag to reorder, close tab (`Ctrl+W`), pin tabs, and context menu (close / close others / close all)
-- **Split editors** - VS Code-style editor groups: split right or down, drag tabs between panes with drop previews, merge by dropping in the center, close a group from the View menu (`Ctrl+\` splits right)
-- **Editing** - Scintilla buffer per tab: undo/redo, cut/copy/paste, line numbers, caret line highlight, optional word wrap, auto-indent, tab/space conversion, brace matching, duplicate/delete/move line, trim trailing whitespace, zoom
-- **Syntax highlighting** - Language detection from file extension and first-line hints; rules loaded from bundled [micro](https://github.com/zyedidia/micro) YAML syntax files (C/C++, Python, JSON, and many more); manual language override from the status bar menu
-- **Find & replace** - Find, find previous, replace, replace all, match case, whole word, regex (PCRE2), forward/backward search, F3 / Shift+F3; go to line; open `path:line` from the project tree
-- **Project pane** - Open a folder, filter files, double-click to open (supports `file:line`)
-- **Output pane** - Toggleable panel; run a simple command (`cmd /c echo …`) and capture output
-- **Session restore** - Open tabs and layout saved beside `%APPDATA%\WinCpp\config.json` as `config.json.session`
-- **Code folding** - Brace-based fold margin (View menu toggle)
-- **Themes (foundation)** - Parser for micro `.micro` colorscheme files (`ThemeLoader`) for future editor chrome styling
-- **Command palette** - Minimal filterable command list (`Ctrl+Shift+P`)
-- **Recent files** - Open Recent submenu; list and editor settings stored in `%APPDATA%\WinCpp\config.json`
-- **Status bar** - Line/column, language, EOL, selection length, modified state
+- Native Windows desktop app built with C++20, Win32, common controls, and CMake.
+- Scintilla-backed editor with one buffer per document.
+- Multiple tabs with drag reorder, close, close others, close all, and pinning.
+- VS Code-style editor groups with split right/down, drag-to-split, center-drop
+  merge, empty group cleanup, and split-copy tab close behavior.
+- Project tree with folder open, filtering, file icons, and `path:line` open.
+- Find, replace, regex search, whole word, match case, find previous/next, and go
+  to line.
+- Output pane for captured command output.
+- Syntax highlighting from bundled micro editor YAML syntax definitions.
+- Session restore for open tabs, project root, pane sizes, and split layout.
+- Classic toolbar and status bar with line/column, language, EOL, selection, and
+  modified state.
 
-### Editor settings (`config.json` → `editor`)
+## Feature Overview
 
-| Setting | Default | Notes |
-|---------|---------|--------|
-| `tabsize` | 4 | Tab width |
-| `tabstospaces` | false | Insert spaces when pressing Tab |
-| `autoindent` | true | Copy indent on new line |
-| `matchbrace` | true | Brace highlight |
-| `wordwrap` | false | |
-| `fontsize` | 11 | |
-| `zoom` | 0 | Scintilla zoom level |
-| `trimTrailingWhitespaceOnSave` | false | |
+### Editor
+
+- Undo, redo, cut, copy, paste
+- Line numbers with margin padding
+- Current-line highlight
+- Auto-indent
+- Optional word wrap
+- Tab-to-space settings
+- Convert tabs to spaces and spaces to tabs
+- Brace matching and go-to-matching-brace
+- Duplicate line, delete line, move line up/down
+- Trim trailing whitespace
+- Zoom in, zoom out, and reset zoom
+- Brace-based code folding
+
+### Tabs And Splits
+
+- Multiple open files
+- Drag tabs to reorder
+- Drag tabs between editor groups
+- Split editor right or down
+- Drop preview for split targets
+- Center-drop merge behavior
+- Last-tab group movement when dragging a whole group
+- Empty editor group cleanup
+- Close a split copy without closing the document when the document is still open
+  in another group
+- Tab context menu with close, close others, close all, pin, split right, and
+  split down
+
+### Search
+
+- Find dialog
+- Replace dialog
+- Find next and find previous
+- Replace current match
+- Replace all
+- Match case
+- Whole word
+- Regex search using PCRE2
+- Find highlights across editor views
+- Go to line dialog
+
+### Project Pane
+
+- Open folder
+- Tree view with directory and file icons
+- Filter project files
+- Double-click to open a file
+- Supports `file:line` style entries
+- Resizable project pane
+- Pane layout aligns with the editor and output pane
+
+### Output Pane
+
+- Toggleable output pane
+- Resizable splitter
+- Captures output from the Run Command dialog
+- Uses a read-only multiline edit control
+- Layout aligns with the project pane and editor area
+
+### Syntax And Themes
+
+- Syntax definitions loaded from bundled micro editor YAML files
+- Language detection by extension, filename, header, and signature
+- Status bar language display
+- Status bar language override menu
+- Built-in light/dark UI chrome derived from Windows colors
+- Theme parser support for micro `.micro` color scheme files
+
+### Persistence
+
+WinCpp stores user state under:
+
+```text
+%APPDATA%\WinCpp\
+```
+
+Files:
+
+- `config.json` stores recent files and editor settings.
+- `config.json.session` stores open tabs, project root, pane sizes, and layout.
+
+## Editor Settings
+
+The `editor` object in `config.json` supports:
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `tabsize` | `4` | Tab width in spaces |
+| `tabstospaces` | `false` | Insert spaces when pressing Tab |
+| `autoindent` | `true` | Copy indentation when creating a new line |
+| `matchbrace` | `true` | Highlight matching braces |
+| `wordwrap` | `false` | Enable Scintilla word wrap |
+| `fontsize` | `11` | Editor font size |
+| `zoom` | `0` | Scintilla zoom level |
+| `trimTrailingWhitespaceOnSave` | `false` | Remove trailing whitespace on save |
+
+## Keyboard Shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| New file | `Ctrl+N` |
+| Open file | `Ctrl+O` |
+| Save | `Ctrl+S` |
+| Find | `Ctrl+F` |
+| Find next | `F3` |
+| Find previous | `Shift+F3` |
+| Replace | `Ctrl+H` |
+| Go to line | `Ctrl+G` |
+| Duplicate line | `Ctrl+D` |
+| Close tab | `Ctrl+W` |
+| Command palette | `Ctrl+Shift+P` |
+| Split editor right | `Ctrl+\` |
+
+Other commands are available from the menu bar, toolbar, tab context menu, and
+command palette.
 
 ## Requirements
 
 - Windows 10 or later
-- Visual Studio 2022 or newer (with **Desktop development with C++**)
-- CMake 3.10+
-- Git (CMake downloads Scintilla, yaml-cpp, and PCRE2 automatically)
+- Visual Studio 2022 or newer with Desktop development with C++
+- CMake 3.10 or newer
+- Git, because CMake fetches third-party dependencies
+
+CMake downloads and builds these dependencies automatically:
+
+- Scintilla
+- yaml-cpp
+- PCRE2
+- GoogleTest for tests
 
 ## Build
 
-Open a **x64 Native Tools** command prompt (or run `vcvars64.bat`), then:
+From the repository parent directory, open a Visual Studio x64 developer command
+prompt, then run:
 
 ```bat
 cd WinCpp
@@ -50,83 +168,133 @@ cmake -B out/build/x64-release -DCMAKE_BUILD_TYPE=Release
 cmake --build out/build/x64-release --target WinCpp
 ```
 
-The executable is at `WinCpp/out/build/x64-release/WinCpp/WinCpp.exe`.
+The app executable is created at:
 
-You can also open `WinCpp/WinCpp.sln` in Visual Studio and build from there.
+```text
+WinCpp/out/build/x64-release/WinCpp/WinCpp.exe
+```
+
+You can also open the CMake project in Visual Studio and build the `WinCpp`
+target.
 
 ## Run
 
-Run `WinCpp.exe`. Settings and recent files are stored in `%APPDATA%\WinCpp\config.json`.
+After building:
 
-## Shortcuts
+```bat
+WinCpp\out\build\x64-release\WinCpp\WinCpp.exe
+```
 
-| Action | Keys |
-|--------|------|
-| New file | Ctrl+N |
-| Open file | Ctrl+O |
-| Save | Ctrl+S |
-| Save all | (File menu) |
-| Find | Ctrl+F |
-| Find next / previous | F3 / Shift+F3 |
-| Replace | Ctrl+H |
-| Go to line | Ctrl+G |
-| Close tab | Ctrl+W |
-| Duplicate line | Ctrl+D |
-| Command palette | Ctrl+Shift+P |
-| Split right | Ctrl+\ |
-| Zoom in / out / reset | (View menu) |
-
-Use **Help > Credits** for third-party acknowledgements (Micro syntax files, Scintilla, and others).
+Or run the executable directly from Explorer.
 
 ## Tests
 
-Unit and integration tests use [Google Test](https://github.com/google/googletest). From the same build directory as the app (use the **x64 Native Tools** environment so MSVC can compile dependencies):
+Build and run the test suite from the same Visual Studio x64 developer command
+prompt:
 
 ```bat
+cd WinCpp
 cmake --build out/build/x64-release --target WinCppTests
 ctest --test-dir out/build/x64-release/WinCpp/tests --output-on-failure
 ```
 
-Or run `WinCppTests.exe` directly from `out/build/x64-release/WinCpp/tests/`.
+The current suite has 162 automated tests.
 
-### Feature coverage matrix
+You can also run the test executable directly:
 
-| Feature | Test suite(s) |
-|---------|----------------|
-| Tabs | `TabBarLogic`, `TabBarMessage`, `TabBar`, `EditorWorkspace` |
-| Split editors | `EditorSplitDrop`, `EditorWorkspace` |
-| Editing | `EditorView`, `IndentLogic` |
+```bat
+out\build\x64-release\WinCpp\tests\WinCppTests.exe
+```
+
+## Test Coverage Map
+
+| Area | Test suite |
+| --- | --- |
+| Tab hit testing, insert positions, pinned ordering | `TabBarLogic` |
+| Tab control behavior and messages | `TabBar`, `TabBarMessage` |
+| Editor split drop zones and previews | `EditorSplitDrop` |
+| Editor groups, tab movement, split/merge behavior | `EditorWorkspace` |
+| Scintilla editor operations | `EditorView` |
+| Find/replace engine | `EditorSearch`, `EditorView` |
+| Regex wrapper | `RegexPattern` |
+| Syntax registry and highlighting | `SyntaxRegistry`, `SyntaxHighlighter` |
 | Editor settings | `EditorSettings` |
-| Syntax highlighting | `SyntaxRegistry`, `SyntaxHighlighter` |
-| Find & replace | `EditorView`, `EditorSearch` |
-| Status bar | `StatusBarModel` |
-| Save / close all | `DocumentCollectionLogic` |
-| Path `file:line` | `PathLineParser` |
-| Command palette filter | `CommandRegistry` |
-| Project tree filter | `TreeFilterLogic` |
-| Session restore | `SessionState` |
-| Run command output | `ProcessOutput` |
-| Code folding | `FoldingLogic` |
-| Colorschemes | `ThemeLoader` |
+| Indentation and folding helpers | `IndentLogic`, `FoldingLogic` |
 | Recent files | `RecentFilesStore` |
-| Tab / window titles | `DocumentNaming` |
-| UI fonts | `UiHelpers` |
-| Regex syntax rules | `RegexPattern` |
+| Config JSON | `ConfigJson` |
+| Session save/restore | `SessionState` |
+| Status bar formatting | `StatusBarModel` |
+| Document titles and save lists | `DocumentNaming`, `DocumentCollectionLogic` |
+| Project path parsing and filtering | `PathLineParser`, `TreeFilterLogic` |
+| Command palette filtering | `CommandRegistry` |
+| Command output capture | `ProcessOutput` |
+| Dialog layout | `DialogLayout` |
+| UI helpers and DPI scaling | `UiHelpers`, `UiMetrics` |
+| Main window pane geometry | `MainWindowTest` |
+| Theme parsing | `ThemeLoader` |
 
-**139 automated tests** cover testable logic for tabs, splits, editing, settings, syntax, search, workspace, and themes.
+## Source Layout
 
-### Manual testing only
+The C++ source is organized under `WinCpp/WinCpp/`:
 
-These flows are not automated (file/folder dialogs, full main window, or live drag rendering):
+```text
+app/            Main window orchestration, dialogs, document commands, session IO
+core/           Command IDs and command registry
+editor/         Scintilla editor view, workspace groups, search, settings, folding
+platform/       Windows process/output helpers
+project/        Project tree, file filtering, path:line parsing
+storage/        Config, recent files, session serialization
+syntax_engine/  Syntax registry, highlighting, regex, theme parsing
+ui/             Toolbar, tabs, dialogs, status bar, UI metrics, theme chrome
+syntax/         Bundled micro syntax YAML files copied beside the executable
+cmake/          Third-party build integration
+```
 
-- **Open / Save As** and **Open Folder** common dialogs
-- **Project tree** population and double-click open (beyond unit-tested path parsing)
-- **Output pane** layout toggling with the full chrome
-- **Find/Replace** and **Go to Line** modal dialogs (logic is tested; UI is manual)
-- Live **drag ghost** rendering during tab drag
-- **Credits** dialog
-- Applying micro colorschemes to the live Scintilla theme (parser only today)
+Tests live under `WinCpp/tests/`.
+
+The main window implementation is intentionally split by responsibility:
+
+- `app/MainWindow.cpp` - creation and top-level window setup
+- `app/MainWindowMessages.cpp` - Win32 message dispatch and command handling
+- `app/MainWindowDialogs.cpp` - Find, Replace, Go To Line, Run Command, Credits
+- `app/MainWindowDocuments.cpp` - document lifecycle and file commands
+- `app/MainWindowSession.cpp` - session load/save
+- `project/MainWindowProject.cpp` - project tree population and activation
+- `ui/MainWindowChrome.cpp` - menu, toolbar, status bar, pane layout, splitters
+
+The editor workspace is split into:
+
+- `editor/EditorWorkspace.cpp` - group creation, split tree, layout
+- `editor/EditorWorkspaceTabs.cpp` - tab/document synchronization
+- `editor/EditorWorkspaceDrag.cpp` - drag tracking, split drop, overlay rendering
+
+## Manual Checks
+
+These flows depend on native Windows dialogs or live UI behavior and are best
+checked manually after large UI changes:
+
+- Open File and Save As common dialogs
+- Open Folder and project tree population
+- Live tab drag ghost rendering
+- Splitter dragging for project and output panes
+- Dark mode and high-DPI layouts
+- Status bar language override menu
+- Credits dialog
+- Run Command dialog with real commands
+
+## Third-Party Credits
+
+WinCpp uses:
+
+- Scintilla for the editor control
+- yaml-cpp for YAML parsing
+- PCRE2 for regex support
+- GoogleTest for automated tests
+- micro editor syntax files for bundled language definitions
+
+Use `Help > Credits` inside the app for the in-app acknowledgements.
 
 ## License
 
-This project uses third-party libraries (Scintilla, yaml-cpp, PCRE2). See their respective licenses.
+This project includes third-party libraries and syntax definitions. See the
+respective upstream projects for their license terms.
