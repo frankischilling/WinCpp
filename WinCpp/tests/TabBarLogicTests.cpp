@@ -65,3 +65,14 @@ TEST(TabBarLogic, BoundaryAtTabEdge)
   const std::vector<RECT> tabs{{0, 0, 100, 28}, {100, 0, 200, 28}};
   EXPECT_EQ(TabBarLogic::HitTestInsertIndex(100, 0, tabs), 1);
 }
+
+TEST(TabBarLogic, SortIndicesPinnedFirst)
+{
+  const std::vector<int> indices = {0, 1, 2};
+  const std::vector<bool> pinned = {false, true, false};
+  const auto sorted = TabBarLogic::SortIndicesPinnedFirst(indices, pinned);
+  ASSERT_EQ(sorted.size(), 3u);
+  EXPECT_EQ(sorted[0], 1);
+  EXPECT_EQ(sorted[1], 0);
+  EXPECT_EQ(sorted[2], 2);
+}

@@ -14,6 +14,19 @@ set(WINCPP_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/RegexPattern.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/SyntaxRegistry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/RecentFilesStore.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/ConfigJson.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/EditorSettings.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/IndentLogic.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/EditorSearch.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/StatusBarModel.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/DocumentCollectionLogic.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/PathLineParser.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/CommandRegistry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/TreeFilterLogic.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/SessionState.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/ProcessOutput.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/FoldingLogic.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/ThemeLoader.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/TabBarLogic.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/EditorView.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../WinCpp/SyntaxHighlighter.cpp
@@ -31,6 +44,18 @@ add_executable(WinCppTests
   RegexPatternTests.cpp
   SyntaxRegistryTests.cpp
   RecentFilesStoreTests.cpp
+  EditorSettingsTests.cpp
+  IndentLogicTests.cpp
+  EditorSearchTests.cpp
+  StatusBarModelTests.cpp
+  DocumentCollectionLogicTests.cpp
+  PathLineParserTests.cpp
+  CommandRegistryTests.cpp
+  TreeFilterLogicTests.cpp
+  SessionStateTests.cpp
+  ProcessOutputTests.cpp
+  FoldingLogicTests.cpp
+  ThemeLoaderTests.cpp
   TabBarLogicTests.cpp
   TabBarMessageTests.cpp
   EditorViewTests.cpp

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "EditorView.h"
+#include "EditorSettings.h"
 
 #include <Scintilla.h>
 
@@ -216,4 +217,51 @@ TEST_F(EditorViewTest, ReplaceAllExactCount)
   ASSERT_TRUE(editor_.LoadFromFile(path.wstring(), nullptr));
   const int count = editor_.ReplaceAll(L"line", L"row", false, false);
   EXPECT_EQ(count, 1);
+}
+
+TEST_F(EditorViewTest, ApplySettingsSetsTabWidth)
+{
+  EditorSettings settings;
+  settings.tabSize = 2;
+  settings.tabToSpaces = true;
+  editor_.ApplySettings(settings);
+  EXPECT_EQ(SendMessage(editor_.Hwnd(), SCI_GETTABWIDTH, 0, 0), 2);
+  EXPECT_EQ(SendMessage(editor_.Hwnd(), SCI_GETUSETABS, 0, 0), 0);
+}
+
+TEST_F(EditorViewTest, DuplicateLineIncreasesLineCount)
+{
+  ASSERT_TRUE(editor_.LoadFromFile((FixturesDir() / "sample.txt").wstring(), nullptr));
+  const LRESULT before = SendMessage(editor_.Hwnd(), SCI_GETLINECOUNT, 0, 0);
+  editor_.DuplicateLine();
+  EXPECT_EQ(SendMessage(editor_.Hwnd(), SCI_GETLINECOUNT, 0, 0), before + 1);
+}
+
+TEST_F(EditorViewTest, TrimTrailingWhitespace)
+{
+  ASSERT_TRUE(editor_.LoadFromFile((FixturesDir() / "trailing_ws.txt").wstring(), nullptr));
+  EXPECT_GE(editor_.TrimTrailingWhitespace(), 1);
+}
+
+TEST_F(EditorViewTest, ZoomDeltaChangesZoom)
+{
+  const int before = editor_.GetZoom();
+  editor_.ZoomDelta(1);
+  EXPECT_EQ(editor_.GetZoom(), before + 1);
+}
+
+TEST_F(EditorViewTest, FindNextWithRegex)
+{
+  ASSERT_TRUE(editor_.LoadFromFile((FixturesDir() / "sample.txt").wstring(), nullptr));
+  SearchOptions options;
+  options.regex = true;
+  EXPECT_TRUE(editor_.FindNext(L"line", options));
+}
+
+TEST_F(EditorViewTest, GotoMatchingBraceOnParentheses)
+{
+  SendMessage(editor_.Hwnd(), SCI_SETTEXT, 0, reinterpret_cast<LPARAM>("(x)"));
+  SendMessage(editor_.Hwnd(), SCI_GOTOPOS, 0, 0);
+  editor_.SetBraceMatching(true);
+  EXPECT_TRUE(editor_.GotoMatchingBrace());
 }

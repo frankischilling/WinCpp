@@ -1,0 +1,3 @@
+color-link default "#F8F8F2,#282828"
+color-link comment "#75715E,#282828"
+color-link statement "#F92672,#282828"
