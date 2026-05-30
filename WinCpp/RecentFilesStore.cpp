@@ -196,8 +196,23 @@ void ParseRecentFilesArray(const std::string& json, std::vector<std::wstring>& i
 }
 }
 
+void RecentFilesStore::SetConfigPathOverride(const std::wstring& path)
+{
+  configPathOverride_ = path;
+}
+
+void RecentFilesStore::ClearConfigPathOverride()
+{
+  configPathOverride_.clear();
+}
+
 std::wstring RecentFilesStore::ConfigPath() const
 {
+  if (!configPathOverride_.empty())
+  {
+    return configPathOverride_;
+  }
+
   wchar_t appData[MAX_PATH] = {};
   if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appData)))
   {

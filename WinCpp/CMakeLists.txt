@@ -46,6 +46,14 @@ add_executable (WinCpp WIN32
   "MainWindow.cpp"
   "TabBar.h"
   "TabBar.cpp"
+  "TabBarLogic.h"
+  "TabBarLogic.cpp"
+  "EditorWorkspace.h"
+  "EditorWorkspace.cpp"
+  "EditorSplitDrop.h"
+  "EditorSplitDrop.cpp"
+  "UiHelpers.h"
+  "UiHelpers.cpp"
   "RecentFilesStore.h"
   "RecentFilesStore.cpp"
   "EditorView.h"
@@ -56,6 +64,8 @@ add_executable (WinCpp WIN32
   "SyntaxRegistry.cpp"
   "SyntaxHighlighter.h"
   "SyntaxHighlighter.cpp"
+  "DocumentNaming.h"
+  "DocumentNaming.cpp"
 )
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
@@ -63,7 +73,7 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
 endif()
 
 target_compile_definitions(WinCpp PRIVATE UNICODE _UNICODE INCLUDE_DEPRECATED_FEATURES)
-target_link_libraries(WinCpp PRIVATE comctl32 shell32 ole32 scintilla yaml-cpp pcre2-8)
+target_link_libraries(WinCpp PRIVATE comctl32 shell32 ole32 msimg32 scintilla yaml-cpp pcre2-8)
 target_include_directories(WinCpp PRIVATE
   "${scintilla_SOURCE_DIR}/include"
   "${scintilla_SOURCE_DIR}/src"
@@ -76,4 +86,5 @@ add_custom_command(TARGET WinCpp POST_BUILD
           "$<TARGET_FILE_DIR:WinCpp>/syntax"
 )
 
-# TODO: Add tests and install targets if needed.
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../tests ${CMAKE_CURRENT_BINARY_DIR}/tests)
+

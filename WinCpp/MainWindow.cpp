@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "DocumentNaming.h"
+
 #include <commdlg.h>
 #include <filesystem>
 #include <algorithm>
@@ -8,11 +10,16 @@
 
 #include <Scintilla.h>
 
+#include "UiHelpers.h"
+
 namespace
 {
 constexpr wchar_t kMainWindowClassName[] = L"WinCppMainWindow";
 constexpr int kDefaultTabStripHeight = 28;
 constexpr int kStatusCaretWidth = 180;
+#ifndef SB_SETBORDERS
+#define SB_SETBORDERS (WM_USER + 6)
+#endif
 constexpr int kMinWindowWidth = 900;
 constexpr int kMinWindowHeight = 500;
 constexpr int kFindDlgFindEdit = 3001;
@@ -27,7 +34,13 @@ constexpr int kFindDlgClose = 3008;
 constexpr int kGoToDlgLineEdit = 3101;
 constexpr int kGoToDlgOk = 3102;
 constexpr int kGoToDlgCancel = 3103;
+
+constexpr int kCreditsDlgText = 3201;
+constexpr int kCreditsDlgClose = 3202;
+
 constexpr UINT_PTR kEditorSubclassId = 2;
+constexpr UINT_PTR kProjectHeaderSubclassId = 3;
+constexpr int kTabBottomBorder = 1;
 
 std::filesystem::path GetExecutableDir()
 {
@@ -60,6 +73,46 @@ std::wstring Utf8ToWide(const std::string& text)
   MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
                       result.data(), length);
   return result;
+}
+
+std::wstring BuildDateTimeWide()
+{
+  const std::string stamp = std::string(__DATE__) + " " + __TIME__;
+  return Utf8ToWide(stamp);
+}
+
+std::wstring BuildAboutText()
+{
+  std::wstring text = L"WinCpp\r\n\r\nA simple text editor for Windows.\r\n\r\n";
+  text += L"Built: ";
+  text += BuildDateTimeWide();
+  text += L"\r\n\r\nAuthor: github.com/frankischilling\r\n";
+  text += L"Project: https://github.com/frankischilling/WinCpp\r\n";
+  return text;
+}
+
+std::wstring BuildCreditsText()
+{
+  std::wstring text = L"WinCpp\r\nA simple text editor for Windows.\r\n\r\n";
+  text += L"Built: ";
+  text += BuildDateTimeWide();
+  text += L"\r\nAuthor: github.com/frankischilling\r\n";
+  text += L"Project: https://github.com/frankischilling/WinCpp\r\n";
+  text +=
+      L"\r\n"
+      L"Syntax highlighting\r\n"
+      L"The syntax files in the syntax/ folder come from the micro editor:\r\n"
+      L"  https://github.com/zyedidia/micro\r\n"
+      L"Many of those files were converted from Nano syntax (nanorc):\r\n"
+      L"  https://github.com/scopatz/nanorc\r\n"
+      L"\r\n"
+      L"Third-party libraries\r\n"
+      L"  Scintilla  https://www.scintilla.org/\r\n"
+      L"  yaml-cpp   https://github.com/jbeder/yaml-cpp\r\n"
+      L"  PCRE2      https://github.com/PCRE2Project/pcre2\r\n"
+      L"\r\n"
+      L"Thank you to the authors and contributors of these projects.";
+  return text;
 }
 
 const wchar_t* GetDialogFilter()
@@ -145,7 +198,7 @@ HWND CreateLabeledEdit(HWND parent, int x, int y, int width, int id)
       x,
       y,
       width,
-      24,
+      kUiButtonHeight,
       parent,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
       GetModuleHandleW(nullptr),
@@ -162,7 +215,7 @@ HWND CreateDialogButton(HWND parent, const wchar_t* label, int x, int y, int wid
       x,
       y,
       width,
-      26,
+      kUiButtonHeight,
       parent,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
       GetModuleHandleW(nullptr),
@@ -223,29 +276,45 @@ LRESULT CALLBACK FindDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
       state = reinterpret_cast<FindDialogState*>(create->lpCreateParams);
       SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
 
-      CreateWindowExW(0, L"STATIC", L"Find:", WS_CHILD | WS_VISIBLE, 12, 12, 60, 18, hwnd,
-                      nullptr, GetModuleHandleW(nullptr), nullptr);
-      CreateLabeledEdit(hwnd, 72, 8, 280, kFindDlgFindEdit);
+      RECT client = {};
+      GetClientRect(hwnd, &client);
+      const int labelWidth = 64;
+      const int editX = kUiMargin + labelWidth;
+      const int editWidth = client.right - editX - kUiMargin;
+      const int rowHeight = 28;
 
+      CreateWindowExW(0, L"STATIC", L"Find:", WS_CHILD | WS_VISIBLE, kUiMargin, kUiMargin + 2,
+                      labelWidth, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+      CreateLabeledEdit(hwnd, editX, kUiMargin, editWidth, kFindDlgFindEdit);
+
+      int optionY = kUiMargin + rowHeight + kUiGap;
       if (state->replaceMode)
       {
-        CreateWindowExW(0, L"STATIC", L"Replace:", WS_CHILD | WS_VISIBLE, 12, 44, 60, 18, hwnd,
-                        nullptr, GetModuleHandleW(nullptr), nullptr);
-        CreateLabeledEdit(hwnd, 72, 40, 280, kFindDlgReplaceEdit);
+        CreateWindowExW(0, L"STATIC", L"Replace:", WS_CHILD | WS_VISIBLE, kUiMargin, optionY + 2,
+                        labelWidth, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+        CreateLabeledEdit(hwnd, editX, optionY, editWidth, kFindDlgReplaceEdit);
+        optionY += rowHeight + kUiGap;
       }
 
-      const int optionY = state->replaceMode ? 76 : 44;
-      CreateDialogCheck(hwnd, L"Match case", 12, optionY, 120, kFindDlgMatchCase);
-      CreateDialogCheck(hwnd, L"Whole word", 140, optionY, 120, kFindDlgWholeWord);
+      CreateDialogCheck(hwnd, L"Match case", kUiMargin, optionY, 120, kFindDlgMatchCase);
+      CreateDialogCheck(hwnd, L"Whole word", kUiMargin + 128, optionY, 120, kFindDlgWholeWord);
 
-      const int buttonY = state->replaceMode ? 108 : 76;
-      CreateDialogButton(hwnd, L"Find Next", 12, buttonY, 90, kFindDlgFindNext);
+      const int buttonY = client.bottom - kUiMargin - kUiButtonHeight;
+      CreateDialogButton(hwnd, L"Find Next", kUiMargin, buttonY, 92, kFindDlgFindNext);
       if (state->replaceMode)
       {
-        CreateDialogButton(hwnd, L"Replace", 108, buttonY, 90, kFindDlgReplace);
-        CreateDialogButton(hwnd, L"Replace All", 204, buttonY, 90, kFindDlgReplaceAll);
+        CreateDialogButton(hwnd, L"Replace", kUiMargin + 100, buttonY, 92, kFindDlgReplace);
+        CreateDialogButton(hwnd, L"Replace All", kUiMargin + 200, buttonY, 92, kFindDlgReplaceAll);
+        CreateDialogButton(hwnd, L"Close", client.right - kUiMargin - 84, buttonY, 84,
+                           kFindDlgClose);
       }
-      CreateDialogButton(hwnd, L"Close", 300, buttonY, 70, kFindDlgClose);
+      else
+      {
+        CreateDialogButton(hwnd, L"Close", client.right - kUiMargin - 84, buttonY, 84,
+                           kFindDlgClose);
+      }
+
+      ApplyUiFontToDescendants(hwnd);
       return 0;
     }
     case WM_COMMAND:
@@ -296,13 +365,23 @@ LRESULT CALLBACK GoToDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
       state = reinterpret_cast<GoToDialogState*>(create->lpCreateParams);
       SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
 
+      RECT client = {};
+      GetClientRect(hwnd, &client);
+
       wchar_t label[64] = {};
       swprintf_s(label, L"Line number (1-%d):", state ? state->maxLine : 1);
-      CreateWindowExW(0, L"STATIC", label, WS_CHILD | WS_VISIBLE, 12, 14, 220, 18, hwnd,
-                      nullptr, GetModuleHandleW(nullptr), nullptr);
-      CreateLabeledEdit(hwnd, 12, 36, 220, kGoToDlgLineEdit);
-      CreateDialogButton(hwnd, L"Go", 250, 34, 70, kGoToDlgOk);
-      CreateDialogButton(hwnd, L"Cancel", 330, 34, 70, kGoToDlgCancel);
+      CreateWindowExW(0, L"STATIC", label, WS_CHILD | WS_VISIBLE, kUiMargin, kUiMargin + 2,
+                      client.right - 2 * kUiMargin, 20, hwnd, nullptr, GetModuleHandleW(nullptr),
+                      nullptr);
+      CreateLabeledEdit(hwnd, kUiMargin, kUiMargin + 24, client.right - 2 * kUiMargin,
+                        kGoToDlgLineEdit);
+
+      const int buttonY = client.bottom - kUiMargin - kUiButtonHeight;
+      CreateDialogButton(hwnd, L"Go", client.right - kUiMargin - 176, buttonY, 80, kGoToDlgOk);
+      CreateDialogButton(hwnd, L"Cancel", client.right - kUiMargin - 84, buttonY, 84,
+                         kGoToDlgCancel);
+
+      ApplyUiFontToDescendants(hwnd);
       return 0;
     }
     case WM_COMMAND:
@@ -325,6 +404,59 @@ LRESULT CALLBACK GoToDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
       }
       break;
     }
+    case WM_CLOSE:
+      DestroyWindow(hwnd);
+      return 0;
+    default:
+      break;
+  }
+
+  return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK CreditsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+  switch (msg)
+  {
+    case WM_CREATE:
+    {
+      RECT client = {};
+      GetClientRect(hwnd, &client);
+
+      const int buttonWidth = 84;
+      const int editHeight =
+          client.bottom - kUiMargin - kUiGap - kUiButtonHeight - kUiMargin;
+      const int editWidth = client.right - 2 * kUiMargin;
+
+      const std::wstring creditsBody = BuildCreditsText();
+      CreateWindowExW(
+          WS_EX_CLIENTEDGE,
+          L"EDIT",
+          creditsBody.c_str(),
+          WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+          kUiMargin,
+          kUiMargin,
+          editWidth,
+          editHeight > 0 ? editHeight : 0,
+          hwnd,
+          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCreditsDlgText)),
+          GetModuleHandleW(nullptr),
+          nullptr);
+
+      CreateDialogButton(hwnd, L"Close", client.right - kUiMargin - buttonWidth,
+                         client.bottom - kUiMargin - kUiButtonHeight, buttonWidth,
+                         kCreditsDlgClose);
+
+      ApplyUiFontToDescendants(hwnd);
+      return 0;
+    }
+    case WM_COMMAND:
+      if (LOWORD(wParam) == kCreditsDlgClose)
+      {
+        DestroyWindow(hwnd);
+        return 0;
+      }
+      break;
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;
@@ -358,6 +490,8 @@ void CenterWindowOnParent(HWND dialog, HWND parent, int width, int height)
 
 MainWindow::MainWindow()
   : hwnd_(nullptr),
+    projectPaneHeader_(nullptr),
+    projectPaneDivider_(nullptr),
     projectTree_(nullptr),
     outputPane_(nullptr),
     statusBar_(nullptr),
@@ -368,6 +502,7 @@ MainWindow::MainWindow()
     tabContextMenu_(nullptr),
     contextMenuTabIndex_(-1),
     projectPaneWidth_(240),
+    projectPaneHeaderHeight_(0),
     tabStripHeight_(kDefaultTabStripHeight),
     outputPaneHeight_(180),
     showProjectPane_(true),
@@ -491,25 +626,77 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
       InvalidateTabs();
       return 0;
     }
+    case WM_SYSCOLORCHANGE:
+      SyncChromeColors();
+      break;
+    case WM_CTLCOLOREDIT:
+      if (outputPane_ && reinterpret_cast<HWND>(lParam) == outputPane_ && chromeBackgroundBrush_)
+      {
+        const TabBar::ChromeColors chrome = TabBar::GetChromeColors(hwnd_);
+        SetBkColor(reinterpret_cast<HDC>(wParam), chrome.stripBackground);
+        SetTextColor(reinterpret_cast<HDC>(wParam), chrome.inactiveForeground);
+        return reinterpret_cast<LRESULT>(chromeBackgroundBrush_);
+      }
+      break;
+    case WM_CTLCOLORSTATIC:
+    {
+      const HWND control = reinterpret_cast<HWND>(lParam);
+      const TabBar::ChromeColors chrome = TabBar::GetChromeColors(hwnd_);
+      HDC hdc = reinterpret_cast<HDC>(wParam);
+      if (projectPaneDivider_ && control == projectPaneDivider_ && chromeSidebarBorderBrush_)
+      {
+        SetBkColor(hdc, chrome.sidebarBorder);
+        return reinterpret_cast<LRESULT>(chromeSidebarBorderBrush_);
+      }
+      break;
+    }
     case WM_MOUSEWHEEL:
     case WM_MOUSEHWHEEL:
-      if (tabBar_.Hwnd() &&
-          IsPointOverTabBar({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}))
+      if (editorWorkspace_.ForwardWheelToTabBar({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, msg,
+                                                wParam, lParam))
       {
-        return SendMessageW(tabBar_.Hwnd(), msg, wParam, lParam);
+        return 0;
       }
       break;
     case WM_TABBAR_SELECT:
-      if (static_cast<int>(wParam) >= 0 && static_cast<int>(wParam) != activeDocumentIndex_)
-      {
-        SwitchToDocument(static_cast<int>(wParam));
-      }
+      editorWorkspace_.OnTabSelect(static_cast<int>(lParam), static_cast<int>(wParam));
       return 0;
     case WM_TABBAR_CLOSE:
-      CloseDocumentAt(static_cast<int>(wParam));
+      OnWorkspaceTabClose(static_cast<int>(lParam), static_cast<int>(wParam));
       return 0;
     case WM_TABBAR_CONTEXTMENU:
-      ShowTabContextMenu(static_cast<int>(wParam));
+      ShowTabContextMenu(DocumentIndexForGroupTab(static_cast<int>(lParam),
+                                                  static_cast<int>(wParam)));
+      return 0;
+    case WM_TABBAR_REORDER:
+      editorWorkspace_.OnTabReorder(static_cast<int>(HIWORD(lParam)), static_cast<int>(wParam),
+                                   static_cast<int>(LOWORD(lParam)));
+      return 0;
+    case WM_TABBAR_DRAG_MOVE:
+    {
+      const POINT pt = UnpackScreenPoint(lParam);
+      editorWorkspace_.OnTabDragMove(static_cast<int>(HIWORD(wParam)), static_cast<int>(LOWORD(wParam)),
+                                     pt);
+      return 0;
+    }
+    case WM_TABBAR_DRAG_END:
+    {
+      const POINT pt = UnpackScreenPoint(lParam);
+      editorWorkspace_.OnTabDragEnd(static_cast<int>(HIWORD(wParam)), static_cast<int>(LOWORD(wParam)),
+                                    pt);
+      return 0;
+    }
+    case WM_TABBAR_DRAG_CANCEL:
+      editorWorkspace_.EndDragTracking();
+      return 0;
+    case WM_WORKSPACE_TAB_SELECT:
+      OnWorkspaceTabSelect(static_cast<int>(lParam), static_cast<int>(wParam));
+      return 0;
+    case WM_WORKSPACE_TAB_CLOSE:
+      OnWorkspaceTabClose(static_cast<int>(lParam), static_cast<int>(wParam));
+      return 0;
+    case WM_WORKSPACE_REQUEST_SYNC:
+      SyncTabBar();
       return 0;
     case WM_COMMAND:
     {
@@ -538,19 +725,33 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
           DestroyWindow(hwnd_);
           return 0;
         case kCmdEditUndo:
-          SendMessage(editor_.Hwnd(), SCI_UNDO, 0, 0);
+          SendMessage(editorWorkspace_.ActiveEditor().Hwnd(), SCI_UNDO, 0, 0);
           return 0;
         case kCmdEditRedo:
-          SendMessage(editor_.Hwnd(), SCI_REDO, 0, 0);
+          SendMessage(editorWorkspace_.ActiveEditor().Hwnd(), SCI_REDO, 0, 0);
           return 0;
         case kCmdEditCut:
-          SendMessage(editor_.Hwnd(), SCI_CUT, 0, 0);
+          SendMessage(editorWorkspace_.ActiveEditor().Hwnd(), SCI_CUT, 0, 0);
           return 0;
         case kCmdEditCopy:
-          SendMessage(editor_.Hwnd(), SCI_COPY, 0, 0);
+          SendMessage(editorWorkspace_.ActiveEditor().Hwnd(), SCI_COPY, 0, 0);
           return 0;
         case kCmdEditPaste:
-          SendMessage(editor_.Hwnd(), SCI_PASTE, 0, 0);
+          SendMessage(editorWorkspace_.ActiveEditor().Hwnd(), SCI_PASTE, 0, 0);
+          return 0;
+        case kCmdViewSplitRight:
+          SplitEditor(EditorSplitDirection::Right);
+          return 0;
+        case kCmdViewSplitDown:
+          SplitEditor(EditorSplitDirection::Down);
+          return 0;
+        case kCmdViewCloseEditorGroup:
+          if (editorWorkspace_.HasMultipleGroups())
+          {
+            editorWorkspace_.CloseActiveGroup();
+            SyncTabBar();
+            LayoutChildren();
+          }
           return 0;
         case kCmdEditFind:
           ShowFindReplaceDialog(false);
@@ -565,7 +766,10 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
           ToggleWordWrap();
           return 0;
         case kCmdHelpAbout:
-          MessageBoxW(hwnd_, L"WinCpp text editor.", L"About WinCpp", MB_OK | MB_ICONINFORMATION);
+          MessageBoxW(hwnd_, BuildAboutText().c_str(), L"About WinCpp", MB_OK | MB_ICONINFORMATION);
+          return 0;
+        case kCmdHelpCredits:
+          ShowCreditsDialog();
           return 0;
         case kCmdViewProjectPane:
           ToggleProjectPane();
@@ -612,7 +816,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
       }
 
-      if (header->hwndFrom == editor_.Hwnd())
+      if (header->hwndFrom == editorWorkspace_.ActiveEditor().Hwnd())
       {
         const auto* notification = reinterpret_cast<SCNotification*>(lParam);
         if (notification->nmhdr.code == SCN_UPDATEUI)
@@ -626,7 +830,8 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
           if (activeDocumentIndex_ >= 0 &&
               activeDocumentIndex_ < static_cast<int>(documents_.size()))
           {
-            documents_[activeDocumentIndex_].modified = editor_.IsModified();
+            documents_[activeDocumentIndex_].modified =
+                editorWorkspace_.ActiveEditor().IsModified();
           }
           UpdateStatusBar();
           UpdateActiveTabTitle();
@@ -654,18 +859,18 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 
       if (msg == WM_APP + 1)
       {
-        if (!editor_.FindNext(findText, matchCase, wholeWord, true))
+        if (!editorWorkspace_.ActiveEditor().FindNext(findText, matchCase, wholeWord, true))
         {
           MessageBoxW(hwnd_, L"No matches found.", L"Find", MB_OK | MB_ICONINFORMATION);
         }
       }
       else if (msg == WM_APP + 2)
       {
-        editor_.ReplaceSelection(findText, replaceText, matchCase, wholeWord);
+        editorWorkspace_.ActiveEditor().ReplaceSelection(findText, replaceText, matchCase, wholeWord);
       }
       else if (msg == WM_APP + 3)
       {
-        const int count = editor_.ReplaceAll(findText, replaceText, matchCase, wholeWord);
+        const int count = editorWorkspace_.ActiveEditor().ReplaceAll(findText, replaceText, matchCase, wholeWord);
         wchar_t message[64] = {};
         swprintf_s(message, L"Replaced %d occurrence(s).", count);
         MessageBoxW(hwnd_, message, L"Replace All", MB_OK | MB_ICONINFORMATION);
@@ -683,7 +888,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
       }
 
-      editor_.GoToLine(line);
+      editorWorkspace_.ActiveEditor().GoToLine(line);
       DestroyWindow(dialog);
       UpdateStatusBar();
       return 0;
@@ -694,6 +899,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         DestroyAcceleratorTable(accelerators_);
         accelerators_ = nullptr;
       }
+      ReleaseUiFont();
       PostQuitMessage(0);
       return 0;
     default:
@@ -705,14 +911,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 
 bool MainWindow::IsPointOverTabBar(POINT screenPoint) const
 {
-  if (!tabBar_.Hwnd())
-  {
-    return false;
-  }
-
-  RECT tabRect = {};
-  GetWindowRect(tabBar_.Hwnd(), &tabRect);
-  return PtInRect(&tabRect, screenPoint) != 0;
+  return editorWorkspace_.IsPointOverAnyTabBar(screenPoint);
 }
 
 LRESULT CALLBACK MainWindow::EditorSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -726,11 +925,86 @@ LRESULT CALLBACK MainWindow::EditorSubclassProc(HWND hwnd, UINT msg, WPARAM wPar
 
   if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
   {
-    if (self->tabBar_.Hwnd() &&
-        self->IsPointOverTabBar({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}))
+    if (self->editorWorkspace_.ForwardWheelToTabBar({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)},
+                                                    msg, wParam, lParam))
     {
-      return SendMessageW(self->tabBar_.Hwnd(), msg, wParam, lParam);
+      return 0;
     }
+  }
+
+  if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)
+  {
+    HWND capture = GetCapture();
+    if (capture && capture != hwnd && self->editorWorkspace_.IsTabBarHwnd(capture))
+    {
+      POINT clientPt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+      MapWindowPoints(hwnd, capture, &clientPt, 1);
+      SendMessageW(capture, msg, wParam, MAKELPARAM(clientPt.x, clientPt.y));
+      return 0;
+    }
+  }
+
+  return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK MainWindow::ProjectPaneHeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                                           LPARAM lParam, UINT_PTR,
+                                                           DWORD_PTR refData)
+{
+  auto* self = reinterpret_cast<MainWindow*>(refData);
+  if (!self || !self->hwnd_)
+  {
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+  }
+
+  if (msg == WM_PAINT)
+  {
+    PAINTSTRUCT ps = {};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    RECT client = {};
+    GetClientRect(hwnd, &client);
+
+    const TabBar::ChromeColors chrome = TabBar::GetChromeColors(self->hwnd_);
+    HBRUSH backBrush = CreateSolidBrush(chrome.sidebarHeaderBackground);
+    FillRect(hdc, &client, backBrush);
+    DeleteObject(backBrush);
+
+    const int viewBottom =
+        client.bottom > kTabBottomBorder ? client.bottom - kTabBottomBorder : client.bottom;
+
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    if (!font)
+    {
+      font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(hdc, font));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, chrome.sidebarHeaderForeground);
+
+    const UINT dpi = GetDpiForWindow(hwnd);
+    RECT textRect = client;
+    textRect.left += MulDiv(10, static_cast<int>(dpi), 96);
+    textRect.bottom = viewBottom;
+    DrawTextW(hdc, L"EXPLORER", -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    if (viewBottom < client.bottom)
+    {
+      HPEN borderPen = CreatePen(PS_SOLID, 1, chrome.bottomBorder);
+      HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(hdc, borderPen));
+      MoveToEx(hdc, 0, client.bottom - 1, nullptr);
+      LineTo(hdc, client.right, client.bottom - 1);
+      SelectObject(hdc, oldPen);
+      DeleteObject(borderPen);
+    }
+
+    SelectObject(hdc, oldFont);
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+
+  if (msg == WM_ERASEBKGND)
+  {
+    return 1;
   }
 
   return DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -770,8 +1044,13 @@ void MainWindow::CreateMenus()
   AppendMenuW(viewMenu, MF_STRING | MF_CHECKED, kCmdViewOutputPane, L"&Output Pane");
   AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(viewMenu, MF_STRING, kCmdViewWordWrap, L"&Word Wrap");
+  AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewSplitRight, L"Split Editor &Right");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewSplitDown, L"Split Editor &Down");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewCloseEditorGroup, L"Close Editor &Group");
 
   AppendMenuW(helpMenu, MF_STRING, kCmdHelpAbout, L"&About");
+  AppendMenuW(helpMenu, MF_STRING, kCmdHelpCredits, L"C&redits");
 
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(editMenu), L"&Edit");
@@ -791,6 +1070,7 @@ void MainWindow::CreateAccelerators()
       {FVIRTKEY | FCONTROL, 'H', kCmdEditReplace},
       {FVIRTKEY | FCONTROL, 'G', kCmdEditGoToLine},
       {FVIRTKEY | FCONTROL, 'W', kCmdTabClose},
+      {FVIRTKEY | FCONTROL, VK_OEM_5, kCmdViewSplitRight},
   };
 
   accelerators_ = CreateAcceleratorTableW(table, static_cast<int>(std::size(table)));
@@ -798,8 +1078,38 @@ void MainWindow::CreateAccelerators()
 
 void MainWindow::CreateChildPanes()
 {
+  projectPaneHeader_ = CreateWindowExW(
+      0,
+      L"STATIC",
+      L"",
+      WS_CHILD | WS_VISIBLE,
+      0,
+      0,
+      0,
+      0,
+      hwnd_,
+      nullptr,
+      GetModuleHandleW(nullptr),
+      nullptr);
+  SetWindowSubclass(projectPaneHeader_, ProjectPaneHeaderSubclassProc, kProjectHeaderSubclassId,
+                    reinterpret_cast<DWORD_PTR>(this));
+
+  projectPaneDivider_ = CreateWindowExW(
+      0,
+      L"STATIC",
+      L"",
+      WS_CHILD | WS_VISIBLE,
+      0,
+      0,
+      0,
+      0,
+      hwnd_,
+      nullptr,
+      GetModuleHandleW(nullptr),
+      nullptr);
+
   projectTree_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE,
+      0,
       WC_TREEVIEWW,
       L"",
       WS_CHILD | WS_VISIBLE | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS,
@@ -812,15 +1122,16 @@ void MainWindow::CreateChildPanes()
       GetModuleHandleW(nullptr),
       nullptr);
 
-  tabBar_.Create(hwnd_, GetModuleHandleW(nullptr), kCtrlTab);
-
   tabContextMenu_ = CreatePopupMenu();
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabClose, L"Close");
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabCloseOthers, L"Close Others");
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabCloseAll, L"Close All");
+  AppendMenuW(tabContextMenu_, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(tabContextMenu_, MF_STRING, kCmdViewSplitRight, L"Split Right");
+  AppendMenuW(tabContextMenu_, MF_STRING, kCmdViewSplitDown, L"Split Down");
 
   outputPane_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE,
+      0,
       L"EDIT",
       L"Output pane (log goes here)\r\n",
       WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
@@ -833,11 +1144,10 @@ void MainWindow::CreateChildPanes()
       GetModuleHandleW(nullptr),
       nullptr);
 
-  editor_.Create(hwnd_, GetModuleHandleW(nullptr));
-  SetWindowSubclass(editor_.Hwnd(), EditorSubclassProc, kEditorSubclassId,
-                    reinterpret_cast<DWORD_PTR>(this));
+  editorWorkspace_.Create(hwnd_, GetModuleHandleW(nullptr), hwnd_,
+                          reinterpret_cast<DWORD_PTR>(this));
   const std::filesystem::path syntaxDir = GetExecutableDir() / L"syntax";
-  editor_.LoadSyntaxDirectory(syntaxDir.wstring());
+  editorWorkspace_.LoadSyntaxDirectory(syntaxDir.wstring());
 
   statusBar_ = CreateWindowExW(
       0,
@@ -855,7 +1165,62 @@ void MainWindow::CreateChildPanes()
 
   int parts[] = {-kStatusCaretWidth, -1};
   SendMessageW(statusBar_, SB_SETPARTS, 2, reinterpret_cast<LPARAM>(parts));
+  int statusBorders[] = {0, 0, 0};
+  SendMessageW(statusBar_, SB_SETBORDERS, 0, reinterpret_cast<LPARAM>(statusBorders));
+
+  ApplyUiFont(projectPaneHeader_);
+  ApplyUiFont(projectTree_);
+  ApplyUiFont(outputPane_);
+  ApplyUiFont(statusBar_);
+
+  SyncChromeColors();
   UpdateStatusBar();
+}
+
+void MainWindow::SyncChromeColors()
+{
+  const TabBar::ChromeColors chrome = TabBar::GetChromeColors(hwnd_);
+
+  if (chromeBackgroundBrush_)
+  {
+    DeleteObject(chromeBackgroundBrush_);
+    chromeBackgroundBrush_ = nullptr;
+  }
+  chromeBackgroundBrush_ = CreateSolidBrush(chrome.stripBackground);
+
+  if (chromeSidebarHeaderBrush_)
+  {
+    DeleteObject(chromeSidebarHeaderBrush_);
+    chromeSidebarHeaderBrush_ = nullptr;
+  }
+  chromeSidebarHeaderBrush_ = CreateSolidBrush(chrome.sidebarHeaderBackground);
+
+  if (chromeSidebarBorderBrush_)
+  {
+    DeleteObject(chromeSidebarBorderBrush_);
+    chromeSidebarBorderBrush_ = nullptr;
+  }
+  chromeSidebarBorderBrush_ = CreateSolidBrush(chrome.sidebarBorder);
+
+  if (projectPaneHeader_)
+  {
+    InvalidateRect(projectPaneHeader_, nullptr, FALSE);
+  }
+  if (projectPaneDivider_)
+  {
+    InvalidateRect(projectPaneDivider_, nullptr, TRUE);
+  }
+
+  if (projectTree_)
+  {
+    TreeView_SetBkColor(projectTree_, chrome.stripBackground);
+    TreeView_SetTextColor(projectTree_, chrome.inactiveForeground);
+  }
+
+  if (outputPane_)
+  {
+    InvalidateRect(outputPane_, nullptr, TRUE);
+  }
 }
 
 void MainWindow::EnsureInitialDocument()
@@ -865,9 +1230,10 @@ void MainWindow::EnsureInitialDocument()
     return;
   }
 
-  void* document = editor_.CreateDocument();
-  editor_.SetDocument(document);
-  editor_.Clear();
+  EditorView& editor = editorWorkspace_.PrimaryEditor();
+  void* document = editor.CreateDocument();
+  editor.SetDocument(document);
+  editor.Clear();
 
   EditorDocument entry;
   entry.scintillaDoc = document;
@@ -875,6 +1241,7 @@ void MainWindow::EnsureInitialDocument()
   entry.displayTitle = entry.tabTitle;
   documents_.push_back(entry);
   activeDocumentIndex_ = 0;
+  editorWorkspace_.AttachDocumentToActiveGroup(0, documents_);
   SyncTabBar();
 }
 
@@ -886,12 +1253,7 @@ std::wstring MainWindow::MakeUntitledName()
 
 std::wstring MainWindow::TabLabelForPath(const std::wstring& path) const
 {
-  if (path.empty())
-  {
-    return L"Untitled";
-  }
-
-  return std::filesystem::path(path).filename().wstring();
+  return DocumentNaming::TabLabelForPath(path);
 }
 
 void MainWindow::SaveCurrentDocumentState()
@@ -901,7 +1263,22 @@ void MainWindow::SaveCurrentDocumentState()
     return;
   }
 
-  documents_[activeDocumentIndex_].scintillaDoc = editor_.GetDocumentPointer();
+  EditorDocument& doc = documents_[activeDocumentIndex_];
+  EditorView& editor = editorWorkspace_.ActiveEditor();
+  if (doc.scintillaDoc)
+  {
+    editor.SetDocumentIfNeeded(doc.scintillaDoc);
+    doc.modified = editor.IsModified();
+  }
+  else
+  {
+    void* const shown = editor.GetDocumentPointer();
+    if (shown)
+    {
+      doc.scintillaDoc = shown;
+      doc.modified = editor.IsModified();
+    }
+  }
 }
 
 void MainWindow::AttachEditorToDocument(int index)
@@ -911,15 +1288,8 @@ void MainWindow::AttachEditorToDocument(int index)
     return;
   }
 
-  if (activeDocumentIndex_ >= 0 && activeDocumentIndex_ < static_cast<int>(documents_.size()))
-  {
-    documents_[activeDocumentIndex_].modified = editor_.IsModified();
-  }
-
-  editor_.SetDocumentIfNeeded(documents_[index].scintillaDoc);
+  editorWorkspace_.AttachDocumentToActiveGroup(index, documents_);
   activeDocumentIndex_ = index;
-  documents_[index].modified = editor_.IsModified();
-  tabBar_.SetSelectedIndex(index);
 }
 
 void MainWindow::SwitchToDocument(int index)
@@ -929,21 +1299,22 @@ void MainWindow::SwitchToDocument(int index)
     return;
   }
 
+  SaveCurrentDocumentState();
+
   if (index == activeDocumentIndex_ &&
-      editor_.GetDocumentPointer() == documents_[index].scintillaDoc)
+      editorWorkspace_.ActiveEditor().GetDocumentPointer() == documents_[index].scintillaDoc)
   {
+    if (!documents_[index].path.empty())
+    {
+      editorWorkspace_.ActiveEditor().ApplySyntaxForPath(documents_[index].path);
+    }
     return;
   }
 
-  if (activeDocumentIndex_ >= 0 && activeDocumentIndex_ < static_cast<int>(documents_.size()))
-  {
-    SaveCurrentDocumentState();
-  }
-
-  AttachEditorToDocument(index);
-  tabBar_.RevealTab(index);
+  editorWorkspace_.OpenDocumentInActiveGroup(index, documents_);
+  activeDocumentIndex_ = index;
   UpdateStatusBar();
-  SetFocus(editor_.Hwnd());
+  SetFocus(editorWorkspace_.ActiveEditor().Hwnd());
 }
 
 void MainWindow::AddDocumentTab(const std::wstring& path, void* document)
@@ -982,17 +1353,17 @@ void MainWindow::UpdateActiveTabTitle()
 
   SyncDocumentDisplayTitle(activeDocumentIndex_);
   const EditorDocument& doc = documents_[activeDocumentIndex_];
-  tabBar_.UpdateTitle(activeDocumentIndex_,
-                      doc.displayTitle.empty() ? doc.tabTitle : doc.displayTitle);
+  SyncTabBar();
 }
 
 void MainWindow::NewFile()
 {
   SaveCurrentDocumentState();
 
-  void* const document = editor_.CreateDocument();
+  EditorView& editor = editorWorkspace_.PrimaryEditor();
+  void* const document = editor.CreateDocument();
   AddDocumentTab(L"", document);
-  editor_.Clear();
+  editor.Clear();
   UpdateStatusBar();
 }
 
@@ -1016,12 +1387,19 @@ void MainWindow::OpenFileAtPath(const std::wstring& path, bool addToRecents)
 
   SaveCurrentDocumentState();
 
-  void* const document = editor_.CreateDocument();
+  EditorView& editor = editorWorkspace_.PrimaryEditor();
+  void* const document = editor.CreateDocument();
+  if (!document)
+  {
+    MessageBoxW(hwnd_, L"Failed to open file.\n\nEditor is not ready.", L"Open File",
+                MB_OK | MB_ICONERROR);
+    return;
+  }
 
   std::string error;
-  if (!editor_.LoadFromFileIntoDocument(document, path, &error))
+  if (!editor.LoadFromFileIntoDocument(document, path, &error))
   {
-    editor_.ReleaseDocument(document);
+    editor.ReleaseDocument(document);
     std::wstring message = L"Failed to open file.";
     const std::wstring detail = Utf8ToWide(error);
     if (!detail.empty())
@@ -1033,7 +1411,6 @@ void MainWindow::OpenFileAtPath(const std::wstring& path, bool addToRecents)
   }
 
   AddDocumentTab(path, document);
-  editor_.ApplySyntaxForPath(path);
   UpdateActiveTabTitle();
 
   if (addToRecents)
@@ -1069,7 +1446,7 @@ void MainWindow::SaveFile()
   }
 
   std::string error;
-  if (!editor_.SaveToFile(doc.path, &error))
+  if (!editorWorkspace_.ActiveEditor().SaveToFile(doc.path, &error))
   {
     std::wstring message = L"Failed to save file.";
     const std::wstring detail = Utf8ToWide(error);
@@ -1103,7 +1480,7 @@ void MainWindow::SaveFileAs()
   }
 
   std::string error;
-  if (!editor_.SaveToFile(path, &error))
+  if (!editorWorkspace_.ActiveEditor().SaveToFile(path, &error))
   {
     std::wstring message = L"Failed to save file.";
     const std::wstring detail = Utf8ToWide(error);
@@ -1137,13 +1514,13 @@ void MainWindow::UpdateStatusBar()
     pathLabel = documents_[activeDocumentIndex_].path;
   }
 
-  if (editor_.IsModified())
+  if (editorWorkspace_.ActiveEditor().IsModified())
   {
     pathLabel += L" *";
   }
 
   wchar_t caretLabel[64] = {};
-  swprintf_s(caretLabel, L"Ln %d, Col %d", editor_.GetCurrentLine(), editor_.GetCurrentColumn());
+  swprintf_s(caretLabel, L"Ln %d, Col %d", editorWorkspace_.ActiveEditor().GetCurrentLine(), editorWorkspace_.ActiveEditor().GetCurrentColumn());
 
   SendMessageW(statusBar_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(pathLabel.c_str()));
   SendMessageW(statusBar_, SB_SETTEXTW, 1, reinterpret_cast<LPARAM>(caretLabel));
@@ -1188,7 +1565,7 @@ void MainWindow::ClearRecentFiles()
 void MainWindow::ToggleWordWrap()
 {
   wordWrapEnabled_ = !wordWrapEnabled_;
-  editor_.SetWordWrap(wordWrapEnabled_);
+  editorWorkspace_.ActiveEditor().SetWordWrap(wordWrapEnabled_);
   CheckMenuItem(GetMenu(hwnd_), kCmdViewWordWrap,
                 MF_BYCOMMAND | (wordWrapEnabled_ ? MF_CHECKED : MF_UNCHECKED));
 }
@@ -1207,7 +1584,8 @@ void MainWindow::ShowFindReplaceDialog(bool replaceMode)
   state.replaceMode = replaceMode;
 
   const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
-  const int height = replaceMode ? 170 : 130;
+  const int height = replaceMode ? 220 : 180;
+  const int width = 420;
   HWND dialog = CreateWindowExW(
       WS_EX_DLGMODALFRAME,
       L"WinCppFindDialog",
@@ -1215,7 +1593,7 @@ void MainWindow::ShowFindReplaceDialog(bool replaceMode)
       style,
       CW_USEDEFAULT,
       CW_USEDEFAULT,
-      390,
+      width,
       height,
       hwnd_,
       nullptr,
@@ -1224,7 +1602,40 @@ void MainWindow::ShowFindReplaceDialog(bool replaceMode)
 
   if (dialog)
   {
-    CenterDialogOnWindow(dialog, 390, height);
+    CenterDialogOnWindow(dialog, width, height);
+    SetForegroundWindow(dialog);
+  }
+}
+
+void MainWindow::ShowCreditsDialog()
+{
+  static bool creditsClassRegistered = false;
+  if (!creditsClassRegistered)
+  {
+    RegisterDialogClass(L"WinCppCreditsDialog", CreditsDialogProc);
+    creditsClassRegistered = true;
+  }
+
+  constexpr int dialogWidth = 520;
+  constexpr int dialogHeight = 460;
+
+  HWND dialog = CreateWindowExW(
+      WS_EX_DLGMODALFRAME,
+      L"WinCppCreditsDialog",
+      L"Credits",
+      WS_CAPTION | WS_SYSMENU | WS_POPUP,
+      CW_USEDEFAULT,
+      CW_USEDEFAULT,
+      dialogWidth,
+      dialogHeight,
+      hwnd_,
+      nullptr,
+      GetModuleHandleW(nullptr),
+      nullptr);
+
+  if (dialog)
+  {
+    CenterDialogOnWindow(dialog, dialogWidth, dialogHeight);
     SetForegroundWindow(dialog);
   }
 }
@@ -1240,7 +1651,7 @@ void MainWindow::ShowGoToLineDialog()
 
   static GoToDialogState state;
   state.window = this;
-  state.maxLine = static_cast<int>(SendMessage(editor_.Hwnd(), SCI_GETLINECOUNT, 0, 0));
+  state.maxLine = static_cast<int>(SendMessage(editorWorkspace_.ActiveEditor().Hwnd(), SCI_GETLINECOUNT, 0, 0));
 
   HWND dialog = CreateWindowExW(
       WS_EX_DLGMODALFRAME,
@@ -1249,8 +1660,8 @@ void MainWindow::ShowGoToLineDialog()
       WS_CAPTION | WS_SYSMENU | WS_POPUP,
       CW_USEDEFAULT,
       CW_USEDEFAULT,
-      420,
-      120,
+      440,
+      140,
       hwnd_,
       nullptr,
       GetModuleHandleW(nullptr),
@@ -1259,9 +1670,9 @@ void MainWindow::ShowGoToLineDialog()
   if (dialog)
   {
     wchar_t currentLine[16] = {};
-    swprintf_s(currentLine, L"%d", editor_.GetCurrentLine());
+    swprintf_s(currentLine, L"%d", editorWorkspace_.ActiveEditor().GetCurrentLine());
     SetWindowTextW(GetDlgItem(dialog, kGoToDlgLineEdit), currentLine);
-    CenterDialogOnWindow(dialog, 420, 120);
+    CenterDialogOnWindow(dialog, 440, 140);
     SetForegroundWindow(dialog);
   }
 }
@@ -1399,43 +1810,72 @@ void MainWindow::LayoutChildren()
   const int mainHeight = contentHeight > bottomHeight ? contentHeight - bottomHeight : 0;
   const int editorWidth = clientWidth > leftWidth ? clientWidth - leftWidth : 0;
 
-  if (tabBar_.Hwnd() && editorWidth > 0)
+  constexpr int kSidebarDividerWidth = 1;
+  const UINT layoutDpi = GetDpiForWindow(hwnd_);
+  MeasureTabStripHeight();
+  if (tabStripHeight_ <= 0)
   {
-    MoveWindow(tabBar_.Hwnd(), leftWidth, 0, editorWidth, kDefaultTabStripHeight, TRUE);
-    MeasureTabStripHeight();
-    MoveWindow(tabBar_.Hwnd(), leftWidth, 0, editorWidth, tabStripHeight_, TRUE);
-    SyncTabBar();
+    projectPaneHeaderHeight_ = MulDiv(kDefaultTabStripHeight, static_cast<int>(layoutDpi), 96);
+  }
+  else
+  {
+    projectPaneHeaderHeight_ = tabStripHeight_;
   }
 
-  const int paneTop = tabStripHeight_;
-  const int paneHeight = mainHeight > paneTop ? mainHeight - paneTop : 0;
-
-  if (projectTree_)
+  // Sidebar spans the full height above the status bar; tab strip is editor-column only.
+  if (showProjectPane_ && leftWidth > kSidebarDividerWidth)
   {
-    if (showProjectPane_ && leftWidth > 0)
+    const int sidebarContentWidth = leftWidth - kSidebarDividerWidth;
+    const int treeHeight =
+        contentHeight > projectPaneHeaderHeight_ ? contentHeight - projectPaneHeaderHeight_ : 0;
+    const int dividerHeight =
+        contentHeight > projectPaneHeaderHeight_ ? contentHeight - projectPaneHeaderHeight_ : 0;
+
+    if (projectPaneHeader_)
     {
-      MoveWindow(projectTree_, 0, paneTop, leftWidth, paneHeight, TRUE);
+      // Span the divider column so the bottom rule lines up with the tab strip border.
+      MoveWindow(projectPaneHeader_, 0, 0, leftWidth, projectPaneHeaderHeight_, TRUE);
+      ShowWindow(projectPaneHeader_, SW_SHOW);
+    }
+    if (projectTree_)
+    {
+      MoveWindow(projectTree_, 0, projectPaneHeaderHeight_, sidebarContentWidth, treeHeight, TRUE);
       ShowWindow(projectTree_, SW_SHOW);
     }
-    else
+    if (projectPaneDivider_)
+    {
+      MoveWindow(projectPaneDivider_, leftWidth - kSidebarDividerWidth, projectPaneHeaderHeight_,
+                 kSidebarDividerWidth, dividerHeight, TRUE);
+      ShowWindow(projectPaneDivider_, SW_SHOW);
+    }
+  }
+  else
+  {
+    if (projectPaneHeader_)
+    {
+      ShowWindow(projectPaneHeader_, SW_HIDE);
+    }
+    if (projectTree_)
     {
       ShowWindow(projectTree_, SW_HIDE);
+    }
+    if (projectPaneDivider_)
+    {
+      ShowWindow(projectPaneDivider_, SW_HIDE);
     }
   }
 
   const int editorLeft = leftWidth;
   const int editorPaneWidth = editorWidth > 0 ? editorWidth : clientWidth;
 
-  if (editor_.Hwnd())
-  {
-    MoveWindow(editor_.Hwnd(), editorLeft, paneTop, editorPaneWidth, paneHeight, TRUE);
-  }
+  RECT workspaceBounds = {editorLeft, 0, editorLeft + editorPaneWidth, mainHeight};
+  editorWorkspace_.SetBounds(workspaceBounds);
 
   if (outputPane_)
   {
-    if (showOutputPane_ && bottomHeight > 0)
+    if (showOutputPane_ && bottomHeight > 0 && editorPaneWidth > 0)
     {
-      MoveWindow(outputPane_, 0, mainHeight, clientWidth, bottomHeight, TRUE);
+      MoveWindow(outputPane_, editorLeft, mainHeight, editorPaneWidth, bottomHeight, TRUE);
       ShowWindow(outputPane_, SW_SHOW);
     }
     else
@@ -1443,41 +1883,28 @@ void MainWindow::LayoutChildren()
       ShowWindow(outputPane_, SW_HIDE);
     }
   }
+
+  SyncChromeColors();
 }
 
 void MainWindow::MeasureTabStripHeight()
 {
-  if (!tabBar_.Hwnd())
-  {
-    tabStripHeight_ = kDefaultTabStripHeight;
-    return;
-  }
-
   const UINT dpi = GetDpiForWindow(hwnd_);
-  const int height = tabBar_.GetPreferredHeight();
-  tabStripHeight_ = height > 0 ? height : MulDiv(kDefaultTabStripHeight, static_cast<int>(dpi), 96);
+  tabStripHeight_ = editorWorkspace_.GetTabStripHeight();
+  if (tabStripHeight_ <= 0)
+  {
+    tabStripHeight_ = MulDiv(kDefaultTabStripHeight, static_cast<int>(dpi), 96);
+  }
 }
 
 void MainWindow::SyncTabBar()
 {
-  if (!tabBar_.Hwnd())
-  {
-    return;
-  }
-
   for (size_t i = 0; i < documents_.size(); ++i)
   {
     SyncDocumentDisplayTitle(static_cast<int>(i));
   }
 
-  std::vector<std::wstring> titles;
-  titles.reserve(documents_.size());
-  for (const EditorDocument& doc : documents_)
-  {
-    titles.push_back(doc.displayTitle.empty() ? doc.tabTitle : doc.displayTitle);
-  }
-
-  tabBar_.SetTabs(titles, activeDocumentIndex_);
+  editorWorkspace_.SyncGroupTabs(documents_);
 }
 
 void MainWindow::CenterDialogOnWindow(HWND dialog, int dialogWidth, int dialogHeight) const
@@ -1512,8 +1939,7 @@ std::wstring MainWindow::BuildDisplayTitle(int index) const
   }
 
   const EditorDocument& doc = documents_[index];
-  std::wstring baseTitle = doc.path.empty() ? doc.tabTitle : TabLabelForPath(doc.path);
-  return baseTitle;
+  return DocumentNaming::DisplayTitle(doc.path, doc.tabTitle, false);
 }
 
 void MainWindow::SyncDocumentDisplayTitle(int index)
@@ -1524,17 +1950,10 @@ void MainWindow::SyncDocumentDisplayTitle(int index)
   }
 
   EditorDocument& doc = documents_[index];
-  std::wstring title = BuildDisplayTitle(index);
-
-  if (doc.modified)
-  {
-    title += L" *";
-  }
-
-  doc.displayTitle = title;
+  doc.displayTitle = DocumentNaming::DisplayTitle(doc.path, doc.tabTitle, doc.modified);
   if (doc.path.empty())
   {
-    std::wstring base = title;
+    std::wstring base = doc.displayTitle;
     if (base.size() >= 2 && base.compare(base.size() - 2, 2, L" *") == 0)
     {
       base.resize(base.size() - 2);
@@ -1563,7 +1982,7 @@ bool MainWindow::SaveDocumentAt(int index)
     SaveFile();
   }
 
-  const bool saved = !editor_.IsModified();
+  const bool saved = !editorWorkspace_.ActiveEditor().IsModified();
   documents_[index].modified = !saved;
   if (previous >= 0 && previous < static_cast<int>(documents_.size()) && previous != index)
   {
@@ -1581,7 +2000,7 @@ bool MainWindow::PromptSaveDocument(int index)
 
   if (index == activeDocumentIndex_)
   {
-    documents_[index].modified = editor_.IsModified();
+    documents_[index].modified = editorWorkspace_.ActiveEditor().IsModified();
   }
 
   if (!documents_[index].modified)
@@ -1610,7 +2029,8 @@ bool MainWindow::PromptSaveDocument(int index)
 
 void MainWindow::CreateUntitledDocument()
 {
-  void* const document = editor_.CreateDocument();
+  EditorView& editor = editorWorkspace_.PrimaryEditor();
+  void* const document = editor.CreateDocument();
 
   EditorDocument entry;
   entry.scintillaDoc = document;
@@ -1618,10 +2038,58 @@ void MainWindow::CreateUntitledDocument()
   entry.displayTitle = entry.tabTitle;
   documents_.push_back(entry);
   AttachEditorToDocument(0);
-  editor_.Clear();
+  editorWorkspace_.ActiveEditor().Clear();
   UpdateStatusBar();
   SyncTabBar();
-  SetFocus(editor_.Hwnd());
+  SetFocus(editorWorkspace_.ActiveEditor().Hwnd());
+}
+
+void MainWindow::ReorderDocument(int fromIndex, int insertBefore)
+{
+  const int count = static_cast<int>(documents_.size());
+  if (fromIndex < 0 || fromIndex >= count || insertBefore < 0 || insertBefore > count)
+  {
+    return;
+  }
+
+  if (insertBefore == fromIndex || insertBefore == fromIndex + 1)
+  {
+    return;
+  }
+
+  SaveCurrentDocumentState();
+
+  void* const activeDoc =
+      (activeDocumentIndex_ >= 0 && activeDocumentIndex_ < count)
+          ? documents_[activeDocumentIndex_].scintillaDoc
+          : nullptr;
+
+  EditorDocument moved = std::move(documents_[fromIndex]);
+  documents_.erase(documents_.begin() + fromIndex);
+
+  int target = insertBefore;
+  if (fromIndex < insertBefore)
+  {
+    --target;
+  }
+
+  documents_.insert(documents_.begin() + target, std::move(moved));
+
+  editorWorkspace_.ReindexDocumentsAfterReorder(fromIndex, target);
+
+  if (activeDoc)
+  {
+    for (int i = 0; i < static_cast<int>(documents_.size()); ++i)
+    {
+      if (documents_[i].scintillaDoc == activeDoc)
+      {
+        activeDocumentIndex_ = i;
+        break;
+      }
+    }
+  }
+
+  SyncTabBar();
 }
 
 void MainWindow::CloseDocumentAt(int index)
@@ -1639,15 +2107,15 @@ void MainWindow::CloseDocumentAt(int index)
   void* const documentToClose = documents_[index].scintillaDoc;
   const bool closingOnlyTab = documents_.size() == 1;
 
-  void* const editorDocument = editor_.GetDocumentPointer();
+  void* const editorDocument = editorWorkspace_.ActiveEditor().GetDocumentPointer();
 
   if (editorDocument == documentToClose)
   {
     if (closingOnlyTab)
     {
-      void* const replacement = editor_.CreateDocument();
-      editor_.SetDocumentIfNeeded(replacement);
-      editor_.ReleaseDocument(documentToClose);
+      void* const replacement = editorWorkspace_.PrimaryEditor().CreateDocument();
+      editorWorkspace_.ActiveEditor().SetDocumentIfNeeded(replacement);
+      editorWorkspace_.ActiveEditor().ReleaseDocument(documentToClose);
 
       documents_.clear();
 
@@ -1657,16 +2125,17 @@ void MainWindow::CloseDocumentAt(int index)
       entry.displayTitle = entry.tabTitle;
       documents_.push_back(entry);
       activeDocumentIndex_ = 0;
-      tabBar_.RevealTab(0);
+      editorWorkspace_.EnsureDefaultGroup();
+      editorWorkspace_.AttachDocumentToActiveGroup(0, documents_);
       UpdateStatusBar();
       SyncTabBar();
       LayoutChildren();
-      SetFocus(editor_.Hwnd());
+      SetFocus(editorWorkspace_.ActiveEditor().Hwnd());
       return;
     }
 
     const int switchIndex = index > 0 ? index - 1 : 1;
-    editor_.SetDocumentIfNeeded(documents_[switchIndex].scintillaDoc);
+    editorWorkspace_.ActiveEditor().SetDocumentIfNeeded(documents_[switchIndex].scintillaDoc);
     activeDocumentIndex_ = switchIndex;
   }
   else
@@ -1674,21 +2143,24 @@ void MainWindow::CloseDocumentAt(int index)
     SaveCurrentDocumentState();
   }
 
-  if (editor_.GetDocumentPointer() == documentToClose)
+  if (editorWorkspace_.ActiveEditor().GetDocumentPointer() == documentToClose)
   {
     for (size_t i = 0; i < documents_.size(); ++i)
     {
       if (static_cast<int>(i) != index)
       {
-        editor_.SetDocumentIfNeeded(documents_[i].scintillaDoc);
+        editorWorkspace_.ActiveEditor().SetDocumentIfNeeded(documents_[i].scintillaDoc);
         break;
       }
     }
   }
 
-  editor_.ReleaseDocument(documentToClose);
+  editorWorkspace_.ActiveEditor().ReleaseDocument(documentToClose);
+  editorWorkspace_.RemoveDocumentFromAllGroups(index);
+  editorWorkspace_.PruneEmptyGroups();
 
   documents_.erase(documents_.begin() + index);
+  editorWorkspace_.ReindexDocumentsAfterClose(index);
 
   if (documents_.empty())
   {
@@ -1714,12 +2186,12 @@ void MainWindow::CloseDocumentAt(int index)
   }
 
   AttachEditorToDocument(activeDocumentIndex_);
-  tabBar_.RevealTab(activeDocumentIndex_);
+  editorWorkspace_.PruneEmptyGroups();
   UpdateStatusBar();
   UpdateActiveTabTitle();
   SyncTabBar();
   LayoutChildren();
-  SetFocus(editor_.Hwnd());
+  SetFocus(editorWorkspace_.ActiveEditor().Hwnd());
 }
 
 void MainWindow::CloseOtherDocuments(int keepIndex)
@@ -1757,6 +2229,43 @@ void MainWindow::CloseAllDocuments()
   if (!documents_.empty())
   {
     CloseDocumentAt(0);
+  }
+}
+
+void MainWindow::SplitEditor(EditorSplitDirection direction)
+{
+  SaveCurrentDocumentState();
+  editorWorkspace_.SplitActive(direction);
+  SyncTabBar();
+  LayoutChildren();
+  SetFocus(editorWorkspace_.ActiveEditor().Hwnd());
+}
+
+int MainWindow::DocumentIndexForGroupTab(int groupId, int localTabIndex) const
+{
+  return editorWorkspace_.GetDocumentIndex(groupId, localTabIndex);
+}
+
+void MainWindow::OnWorkspaceTabSelect(int groupId, int localTabIndex)
+{
+  const int docIndex = DocumentIndexForGroupTab(groupId, localTabIndex);
+  if (docIndex < 0)
+  {
+    return;
+  }
+
+  SaveCurrentDocumentState();
+  editorWorkspace_.FocusGroupTab(groupId, localTabIndex, documents_);
+  activeDocumentIndex_ = docIndex;
+  UpdateStatusBar();
+}
+
+void MainWindow::OnWorkspaceTabClose(int groupId, int localTabIndex)
+{
+  const int docIndex = DocumentIndexForGroupTab(groupId, localTabIndex);
+  if (docIndex >= 0)
+  {
+    CloseDocumentAt(docIndex);
   }
 }
 

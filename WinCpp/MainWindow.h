@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "EditorView.h"
+#include "EditorWorkspace.h"
 #include "RecentFilesStore.h"
 #include "TabBar.h"
 
@@ -30,6 +31,9 @@ private:
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
   static LRESULT CALLBACK EditorSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                              UINT_PTR subclassId, DWORD_PTR refData);
+  static LRESULT CALLBACK ProjectPaneHeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                                        LPARAM lParam, UINT_PTR subclassId,
+                                                        DWORD_PTR refData);
   bool IsPointOverTabBar(POINT screenPoint) const;
   void CreateMenus();
   void CreateAccelerators();
@@ -37,6 +41,7 @@ private:
   void LayoutChildren();
   void MeasureTabStripHeight();
   void SyncTabBar();
+  void SyncChromeColors();
   void CenterDialogOnWindow(HWND dialog, int dialogWidth, int dialogHeight) const;
   void InvalidateTabs();
 
@@ -74,16 +79,25 @@ private:
   void SaveCurrentDocumentState();
   bool PromptSaveDocument(int index);
   void CloseDocumentAt(int index);
+  void ReorderDocument(int fromIndex, int insertBefore);
   void CloseOtherDocuments(int keepIndex);
   void CloseAllDocuments();
   void ShowTabContextMenu(int tabIndex);
+  void ShowCreditsDialog();
+  void SplitEditor(EditorSplitDirection direction);
+  void OnWorkspaceTabSelect(int groupId, int localTabIndex);
+  void OnWorkspaceTabClose(int groupId, int localTabIndex);
+  int DocumentIndexForGroupTab(int groupId, int localTabIndex) const;
+
+  friend class EditorWorkspace;
 
   HWND hwnd_;
+  HWND projectPaneHeader_;
+  HWND projectPaneDivider_;
   HWND projectTree_;
   HWND outputPane_;
   HWND statusBar_;
-  TabBar tabBar_;
-  EditorView editor_;
+  EditorWorkspace editorWorkspace_;
   HACCEL accelerators_;
 
   std::vector<EditorDocument> documents_;
@@ -97,9 +111,13 @@ private:
   std::unordered_map<HTREEITEM, std::wstring> treeItemPaths_;
 
   int projectPaneWidth_;
+  int projectPaneHeaderHeight_;
   int tabStripHeight_;
   int outputPaneHeight_;
   bool showProjectPane_;
   bool showOutputPane_;
   bool wordWrapEnabled_;
+  HBRUSH chromeBackgroundBrush_ = nullptr;
+  HBRUSH chromeSidebarHeaderBrush_ = nullptr;
+  HBRUSH chromeSidebarBorderBrush_ = nullptr;
 };

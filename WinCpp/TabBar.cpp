@@ -1,14 +1,131 @@
 #include "TabBar.h"
 
+#include <cstdlib>
+
 #include <windowsx.h>
+
+#include "TabBarLogic.h"
+#include "UiHelpers.h"
 
 namespace
 {
 constexpr wchar_t kTabBarClassName[] = L"WinCppTabBar";
+constexpr wchar_t kDragGhostClassName[] = L"WinCppTabDragGhost";
 constexpr int kTabWidthFit = 120;
+constexpr int kDragGhostMaxWidth = 120;
+constexpr int kDragGhostOffsetX = 10;
+constexpr int kDragGhostOffsetY = 10;
 constexpr int kTabWidthMin = 50;
 constexpr int kTabWidthMax = 160;
 constexpr int kDefaultHeight = 28;
+constexpr int kBottomBorder = 1;
+
+struct TabTheme
+{
+  COLORREF stripBackground;
+  COLORREF inactiveBackground;
+  COLORREF activeBackground;
+  COLORREF inactiveForeground;
+  COLORREF activeForeground;
+  COLORREF separator;
+  COLORREF hoverBackground;
+  COLORREF bottomBorder;
+  COLORREF sidebarHeaderBackground;
+  COLORREF sidebarHeaderForeground;
+  COLORREF sidebarBorder;
+};
+
+bool IsDarkUi(HWND hwnd)
+{
+  const COLORREF window = GetSysColor(COLOR_WINDOW);
+  UNREFERENCED_PARAMETER(hwnd);
+  return static_cast<int>(GetRValue(window)) + GetGValue(window) + GetBValue(window) < 380;
+}
+
+TabTheme GetTabTheme(HWND hwnd)
+{
+  if (IsDarkUi(hwnd))
+  {
+    return {
+        RGB(37, 37, 38),    // editorGroupHeader.tabsBackground
+        RGB(45, 45, 45),    // tab.inactiveBackground
+        RGB(30, 30, 30),    // tab.activeBackground / editor
+        RGB(150, 150, 150), // tab.inactiveForeground
+        RGB(255, 255, 255), // tab.activeForeground
+        RGB(37, 37, 38),    // tab.border
+        RGB(55, 55, 55),    // tab.hoverBackground
+        RGB(37, 37, 38),    // tabs container bottom
+        RGB(45, 45, 45),    // sideBarSectionHeader.background
+        RGB(187, 187, 187), // sideBarTitle.foreground
+        RGB(68, 68, 68),    // sideBar.border
+    };
+  }
+
+  return {
+      RGB(243, 243, 243), // editorGroupHeader.tabsBackground
+      RGB(236, 236, 236), // tab.inactiveBackground
+      RGB(255, 255, 255), // tab.activeBackground
+      RGB(97, 97, 97),    // tab.inactiveForeground
+      RGB(51, 51, 51),    // tab.activeForeground
+      RGB(227, 227, 227), // tab.border (between tabs)
+      RGB(248, 248, 248), // tab.hoverBackground
+      RGB(214, 214, 214), // tabs container bottom
+      RGB(236, 236, 236), // sideBarSectionHeader.background
+      RGB(97, 97, 97),    // sideBarTitle.foreground
+      RGB(204, 204, 204), // sideBar.border
+  };
+}
+
+void DrawVerticalLine(HDC hdc, int x, int top, int bottom, COLORREF color)
+{
+  if (bottom <= top)
+  {
+    return;
+  }
+
+  HPEN pen = CreatePen(PS_SOLID, 1, color);
+  HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(hdc, pen));
+  MoveToEx(hdc, x, top, nullptr);
+  LineTo(hdc, x, bottom);
+  SelectObject(hdc, oldPen);
+  DeleteObject(pen);
+}
+
+bool RegisterDragGhostClass(HINSTANCE instance)
+{
+  WNDCLASSEXW wc = {};
+  if (GetClassInfoExW(instance, kDragGhostClassName, &wc))
+  {
+    return true;
+  }
+
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = instance;
+  wc.lpszClassName = kDragGhostClassName;
+  return RegisterClassExW(&wc) != 0;
+}
+
+SIZE MeasureDragGhostLabel(HDC hdc, HFONT font, const std::wstring& label, int maxWidth)
+{
+  RECT bounds = {0, 0, maxWidth, 0};
+  HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(hdc, font));
+  DrawTextW(hdc, label.c_str(), -1, &bounds, DT_LEFT | DT_SINGLELINE | DT_CALCRECT | DT_END_ELLIPSIS);
+  SelectObject(hdc, oldFont);
+  return {bounds.right - bounds.left, bounds.bottom - bounds.top};
+}
+}
+
+TabBar::ChromeColors TabBar::GetChromeColors(HWND hwnd)
+{
+  const TabTheme theme = GetTabTheme(hwnd);
+  return {theme.stripBackground,
+          theme.inactiveForeground,
+          theme.separator,
+          theme.sidebarHeaderBackground,
+          theme.sidebarHeaderForeground,
+          theme.sidebarBorder,
+          theme.bottomBorder};
 }
 
 bool TabBar::RegisterClass(HINSTANCE instance)
@@ -51,8 +168,14 @@ bool TabBar::Create(HWND parent, HINSTANCE instance, int controlId)
     return false;
   }
 
-  SendMessageW(hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+  ApplyUiFont(hwnd_);
   return true;
+}
+
+void TabBar::SetNotifyTarget(HWND notifyHwnd, int groupId)
+{
+  notifyHwnd_ = notifyHwnd;
+  groupId_ = groupId;
 }
 
 void TabBar::SetTabs(const std::vector<std::wstring>& titles, int selectedIndex)
@@ -133,7 +256,7 @@ int TabBar::GetPreferredHeight() const
   SelectObject(dc, oldFont);
   ReleaseDC(hwnd_, dc);
 
-  return metrics.tmHeight + MulDiv(10, static_cast<int>(dpi), 96);
+  return metrics.tmHeight + MulDiv(10, static_cast<int>(dpi), 96) + kBottomBorder;
 }
 
 void TabBar::EnsureTabVisible(int index)
@@ -173,7 +296,7 @@ int TabBar::GetCloseButtonWidth() const
 
 int TabBar::GetTabPadding() const
 {
-  return MulDiv(8, static_cast<int>(GetDpiForWindow(hwnd_)), 96);
+  return MulDiv(10, static_cast<int>(GetDpiForWindow(hwnd_)), 96);
 }
 
 int TabBar::GetMinTabWidth() const
@@ -373,7 +496,7 @@ int TabBar::HitTestTab(int x, int y) const
     rect.top = 0;
     RECT client = {};
     GetClientRect(hwnd_, &client);
-    rect.bottom = client.bottom;
+    rect.bottom = client.bottom > kBottomBorder ? client.bottom - kBottomBorder : client.bottom;
     if (adjustedX >= rect.left && adjustedX < rect.right && y >= 0 && y < rect.bottom)
     {
       return static_cast<int>(i);
@@ -398,10 +521,263 @@ int TabBar::HitTestClose(int x, int y) const
 
 void TabBar::NotifyParent(UINT message, int tabIndex) const
 {
-  if (parent_)
+  if (notifyHwnd_)
   {
-    SendMessageW(parent_, message, static_cast<WPARAM>(tabIndex), reinterpret_cast<LPARAM>(hwnd_));
+    SendMessageW(notifyHwnd_, message, static_cast<WPARAM>(tabIndex),
+                 static_cast<LPARAM>(groupId_));
   }
+}
+
+void TabBar::NotifyParentReorder(int fromIndex, int insertBefore) const
+{
+  if (notifyHwnd_)
+  {
+    SendMessageW(notifyHwnd_, WM_TABBAR_REORDER, static_cast<WPARAM>(fromIndex),
+                 MAKELPARAM(static_cast<WORD>(insertBefore), static_cast<WORD>(groupId_)));
+  }
+}
+
+void TabBar::NotifyDragSessionEnd() const
+{
+  if (notifyHwnd_)
+  {
+    SendMessageW(notifyHwnd_, WM_TABBAR_DRAG_CANCEL, static_cast<WPARAM>(groupId_), 0);
+  }
+}
+
+void TabBar::ShowDragGhost()
+{
+  if (!hwnd_ || dragSourceIndex_ < 0 || dragSourceIndex_ >= static_cast<int>(titles_.size()))
+  {
+    return;
+  }
+
+  HideDragGhost();
+
+  HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE));
+  if (!RegisterDragGhostClass(instance))
+  {
+    return;
+  }
+
+  const TabTheme theme = GetTabTheme(hwnd_);
+  const bool dark = IsDarkUi(hwnd_);
+  const COLORREF ghostBack = dark ? RGB(9, 71, 113) : RGB(0, 120, 215);
+  const COLORREF ghostText = RGB(255, 255, 255);
+  const int dpi = static_cast<int>(GetDpiForWindow(hwnd_));
+  const int padX = MulDiv(7, dpi, 96);
+  const int padY = MulDiv(1, dpi, 96);
+  const int maxWidth = MulDiv(kDragGhostMaxWidth, dpi, 96);
+  const int corner = MulDiv(10, dpi, 96);
+
+  HDC screenDc = GetDC(nullptr);
+  HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd_, WM_GETFONT, 0, 0));
+  if (!font)
+  {
+    font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+  }
+
+  const SIZE textSize = MeasureDragGhostLabel(screenDc, font, titles_[dragSourceIndex_], maxWidth);
+  ReleaseDC(nullptr, screenDc);
+
+  const int ghostW = textSize.cx + padX * 2;
+  const int ghostH = textSize.cy + padY * 2;
+  if (ghostW <= 0 || ghostH <= 0)
+  {
+    return;
+  }
+
+  dragGhost_ = CreateWindowExW(
+      WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+      kDragGhostClassName,
+      L"",
+      WS_POPUP,
+      0,
+      0,
+      ghostW,
+      ghostH,
+      nullptr,
+      nullptr,
+      instance,
+      this);
+
+  if (!dragGhost_)
+  {
+    return;
+  }
+
+  HDC hdc = GetDC(dragGhost_);
+  HDC memDc = CreateCompatibleDC(hdc);
+  BITMAPINFO bmi = {};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = ghostW;
+  bmi.bmiHeader.biHeight = -ghostH;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  HBITMAP oldBmp = reinterpret_cast<HBITMAP>(SelectObject(memDc, dib));
+
+  RECT fill = {0, 0, ghostW, ghostH};
+  HBRUSH back = CreateSolidBrush(ghostBack);
+  FillRect(memDc, &fill, back);
+  DeleteObject(back);
+
+  HPEN outline = CreatePen(PS_SOLID, 1, ghostBack);
+  HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(memDc, outline));
+  HBRUSH oldBrush = reinterpret_cast<HBRUSH>(SelectObject(memDc, GetStockObject(NULL_BRUSH)));
+  RoundRect(memDc, 0, 0, ghostW, ghostH, corner, corner);
+  SelectObject(memDc, oldBrush);
+  SelectObject(memDc, oldPen);
+  DeleteObject(outline);
+
+  SetBkMode(memDc, TRANSPARENT);
+  UNREFERENCED_PARAMETER(theme);
+  SetTextColor(memDc, ghostText);
+  HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(memDc, font));
+  RECT text = {padX, padY, ghostW - padX, ghostH - padY};
+  DrawTextW(memDc, titles_[dragSourceIndex_].c_str(), -1, &text,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  SelectObject(memDc, oldFont);
+
+  POINT pt = {};
+  GetCursorPos(&pt);
+  const int offsetX = MulDiv(kDragGhostOffsetX, dpi, 96);
+  const int offsetY = MulDiv(kDragGhostOffsetY, dpi, 96);
+  POINT ptDest = {pt.x - offsetX, pt.y - offsetY};
+  POINT origin = {};
+  SIZE size = {ghostW, ghostH};
+  BLENDFUNCTION blend = {};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = 255;
+  UpdateLayeredWindow(dragGhost_, hdc, &ptDest, &size, memDc, &origin, 0, &blend, ULW_ALPHA);
+
+  SelectObject(memDc, oldBmp);
+  DeleteObject(dib);
+  DeleteDC(memDc);
+  ReleaseDC(dragGhost_, hdc);
+
+  ShowWindow(dragGhost_, SW_SHOWNOACTIVATE);
+}
+
+void TabBar::UpdateDragGhost(POINT screenPoint)
+{
+  if (!dragGhost_)
+  {
+    return;
+  }
+
+  RECT rect = {};
+  GetWindowRect(dragGhost_, &rect);
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  const int dpi = static_cast<int>(GetDpiForWindow(hwnd_));
+  const int offsetX = MulDiv(kDragGhostOffsetX, dpi, 96);
+  const int offsetY = MulDiv(kDragGhostOffsetY, dpi, 96);
+
+  SetWindowPos(dragGhost_, HWND_TOPMOST, screenPoint.x - offsetX, screenPoint.y - offsetY, w, h,
+               SWP_NOACTIVATE | SWP_NOSIZE);
+}
+
+void TabBar::HideDragGhost()
+{
+  if (dragGhost_)
+  {
+    DestroyWindow(dragGhost_);
+    dragGhost_ = nullptr;
+  }
+}
+
+void TabBar::CancelDrag()
+{
+  if (isDragging_ || dragSourceIndex_ >= 0)
+  {
+    NotifyDragSessionEnd();
+  }
+  HideDragGhost();
+  dragSourceIndex_ = -1;
+  dragInsertBefore_ = -1;
+  isDragging_ = false;
+  if (hwnd_ && GetCapture() == hwnd_)
+  {
+    ReleaseCapture();
+  }
+  if (hwnd_)
+  {
+    InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+}
+
+void TabBar::EndDrag(bool commit)
+{
+  const bool wasDragging = isDragging_;
+  if (wasDragging || dragSourceIndex_ >= 0)
+  {
+    NotifyDragSessionEnd();
+  }
+  HideDragGhost();
+
+  if (wasDragging && commit && dragSourceIndex_ >= 0)
+  {
+    POINT pt = {};
+    GetCursorPos(&pt);
+    RECT tabRect = {};
+    GetWindowRect(hwnd_, &tabRect);
+
+    if (PtInRect(&tabRect, pt))
+    {
+      const int from = dragSourceIndex_;
+      const int insertBefore = dragInsertBefore_;
+      if (insertBefore != from && insertBefore != from + 1)
+      {
+        NotifyParentReorder(from, insertBefore);
+      }
+    }
+    else if (notifyHwnd_)
+    {
+      SendMessageW(notifyHwnd_, WM_TABBAR_DRAG_END,
+                   MAKELPARAM(static_cast<WORD>(dragSourceIndex_), static_cast<WORD>(groupId_)),
+                   PackScreenPoint(pt));
+    }
+  }
+
+  dragSourceIndex_ = -1;
+  dragInsertBefore_ = -1;
+  isDragging_ = false;
+  if (hwnd_ && GetCapture() == hwnd_)
+  {
+    ReleaseCapture();
+  }
+  if (hwnd_)
+  {
+    InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+}
+
+int TabBar::HitTestInsertIndex(int x) const
+{
+  return TabBarLogic::HitTestInsertIndex(x, scrollOffset_, tabRects_);
+}
+
+int TabBar::GetInsertMarkerX(int insertBefore) const
+{
+  if (tabRects_.empty())
+  {
+    return 0;
+  }
+
+  if (insertBefore <= 0)
+  {
+    return tabRects_[0].left - scrollOffset_;
+  }
+
+  if (insertBefore >= static_cast<int>(tabRects_.size()))
+  {
+    return tabRects_.back().right - scrollOffset_;
+  }
+
+  return (tabRects_[insertBefore - 1].right + tabRects_[insertBefore].left) / 2 - scrollOffset_;
 }
 
 void TabBar::OnPaint(HDC hdc)
@@ -410,7 +786,8 @@ void TabBar::OnPaint(HDC hdc)
   GetClientRect(hwnd_, &client);
   ClampScrollOffset();
 
-  HBRUSH backBrush = CreateSolidBrush(GetSysColor(COLOR_3DFACE));
+  const TabTheme theme = GetTabTheme(hwnd_);
+  HBRUSH backBrush = CreateSolidBrush(theme.stripBackground);
   FillRect(hdc, &client, backBrush);
   DeleteObject(backBrush);
 
@@ -425,7 +802,7 @@ void TabBar::OnPaint(HDC hdc)
   HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(hdc, font));
   SetBkMode(hdc, TRANSPARENT);
 
-  const int viewBottom = client.bottom;
+  const int viewBottom = client.bottom > kBottomBorder ? client.bottom - kBottomBorder : client.bottom;
 
   for (size_t i = 0; i < titles_.size(); ++i)
   {
@@ -441,12 +818,42 @@ void TabBar::OnPaint(HDC hdc)
     }
 
     const bool selected = static_cast<int>(i) == selectedIndex_;
-    const COLORREF backColor = selected ? GetSysColor(COLOR_WINDOW) : GetSysColor(COLOR_3DFACE);
-    const COLORREF textColor = GetSysColor(COLOR_WINDOWTEXT);
+    const bool hovered = static_cast<int>(i) == hoverTabIndex_ && !selected;
+    const bool isDragSource = isDragging_ && static_cast<int>(i) == dragSourceIndex_;
+
+    COLORREF backColor = theme.inactiveBackground;
+    if (selected)
+    {
+      backColor = theme.activeBackground;
+    }
+    else if (hovered)
+    {
+      backColor = theme.hoverBackground;
+    }
+    if (isDragSource)
+    {
+      backColor = theme.stripBackground;
+    }
+
+    const COLORREF textColor =
+        (selected && !isDragSource) ? theme.activeForeground : theme.inactiveForeground;
+
+    if (selected && client.bottom > viewBottom)
+    {
+      rc.bottom = client.bottom;
+    }
 
     HBRUSH tabBrush = CreateSolidBrush(backColor);
     FillRect(hdc, &rc, tabBrush);
     DeleteObject(tabBrush);
+
+    if (selected && client.bottom > viewBottom)
+    {
+      rc.bottom = viewBottom;
+    }
+
+    // VS Code redrawTabBorders: border-right on each tab (tab.border).
+    DrawVerticalLine(hdc, rc.right - 1, rc.top, rc.bottom, theme.separator);
 
     RECT closeRect = rc;
     closeRect.left = closeRect.right - closeWidth - padding;
@@ -469,12 +876,41 @@ void TabBar::OnPaint(HDC hdc)
 
     if (static_cast<int>(i) == hoverCloseIndex_)
     {
-      HBRUSH hoverBrush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+      HBRUSH hoverBrush = CreateSolidBrush(theme.hoverBackground);
       FillRect(hdc, &closeRect, hoverBrush);
       DeleteObject(hoverBrush);
     }
 
-    DrawTextW(hdc, L"\x00D7", -1, &closeRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (!isDragSource)
+    {
+      DrawTextW(hdc, L"\x00D7", -1, &closeRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+  }
+
+  if (isDragging_ && dragInsertBefore_ >= 0)
+  {
+    const int markerX = GetInsertMarkerX(dragInsertBefore_);
+    if (markerX >= 0 && markerX < client.right)
+    {
+      const int markerW = MulDiv(3, static_cast<int>(GetDpiForWindow(hwnd_)), 96);
+      RECT marker = {markerX - markerW / 2, 2, markerX + markerW / 2 + 1, viewBottom - 2};
+      if (marker.top < marker.bottom)
+      {
+        HBRUSH markerBrush = CreateSolidBrush(RGB(0, 122, 204));
+        FillRect(hdc, &marker, markerBrush);
+        DeleteObject(markerBrush);
+      }
+    }
+  }
+
+  if (viewBottom < client.bottom)
+  {
+    HPEN borderPen = CreatePen(PS_SOLID, 1, theme.bottomBorder);
+    HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(hdc, borderPen));
+    MoveToEx(hdc, 0, client.bottom - 1, nullptr);
+    LineTo(hdc, client.right, client.bottom - 1);
+    SelectObject(hdc, oldPen);
+    DeleteObject(borderPen);
   }
 
   SelectObject(hdc, oldFont);
@@ -532,32 +968,131 @@ LRESULT CALLBACK TabBar::WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
       const int tabIndex = self->HitTestTab(x, y);
       if (tabIndex >= 0)
       {
-        self->selectedIndex_ = tabIndex;
-        self->NotifyParent(WM_TABBAR_SELECT, tabIndex);
+        self->dragSourceIndex_ = tabIndex;
+        self->dragInsertBefore_ = tabIndex;
+        self->dragStartX_ = x;
+        self->dragStartY_ = y;
+        self->isDragging_ = false;
+        SetCapture(hwnd);
+
+        if (tabIndex != self->selectedIndex_)
+        {
+          self->selectedIndex_ = tabIndex;
+          self->NotifyParent(WM_TABBAR_SELECT, tabIndex);
+        }
         InvalidateRect(hwnd, nullptr, TRUE);
       }
       return 0;
     }
+    case WM_LBUTTONUP:
+      if (GetCapture() == hwnd)
+      {
+        self->EndDrag(self->isDragging_);
+        return 0;
+      }
+      break;
+    case WM_CAPTURECHANGED:
+      if (reinterpret_cast<HWND>(lParam) != hwnd)
+      {
+        self->CancelDrag();
+      }
+      return 0;
     case WM_MOUSEMOVE:
     {
+      const int x = GET_X_LPARAM(lParam);
+      const int y = GET_Y_LPARAM(lParam);
+
+      if (GetCapture() == hwnd && self->dragSourceIndex_ >= 0)
+      {
+        if (!self->isDragging_)
+        {
+          const int dx = x - self->dragStartX_;
+          const int dy = y - self->dragStartY_;
+          if (abs(dx) >= GetSystemMetrics(SM_CXDRAG) || abs(dy) >= GetSystemMetrics(SM_CYDRAG))
+          {
+            self->isDragging_ = true;
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            self->ShowDragGhost();
+          }
+        }
+
+        if (self->isDragging_)
+        {
+          POINT screen = {};
+          GetCursorPos(&screen);
+          self->UpdateDragGhost(screen);
+
+          RECT client = {};
+          GetClientRect(hwnd, &client);
+          const int margin = MulDiv(32, static_cast<int>(GetDpiForWindow(hwnd)), 96);
+          const int scrollStep = MulDiv(14, static_cast<int>(GetDpiForWindow(hwnd)), 96);
+          if (x < margin)
+          {
+            self->scrollOffset_ -= scrollStep;
+            self->ClampScrollOffset();
+          }
+          else if (x > client.right - margin)
+          {
+            self->scrollOffset_ += scrollStep;
+            self->ClampScrollOffset();
+          }
+
+          const int insertBefore = self->HitTestInsertIndex(x);
+          if (insertBefore != self->dragInsertBefore_)
+          {
+            self->dragInsertBefore_ = insertBefore;
+            InvalidateRect(hwnd, nullptr, TRUE);
+          }
+
+          if (self->notifyHwnd_)
+          {
+            POINT screen = {};
+            GetCursorPos(&screen);
+            RECT tabBarScreen = {};
+            GetWindowRect(hwnd, &tabBarScreen);
+            if (!PtInRect(&tabBarScreen, screen))
+            {
+              SendMessageW(self->notifyHwnd_, WM_TABBAR_DRAG_MOVE,
+                           MAKELPARAM(static_cast<WORD>(self->dragSourceIndex_),
+                                      static_cast<WORD>(self->groupId_)),
+                           PackScreenPoint(screen));
+            }
+          }
+        }
+        return 0;
+      }
+
       TRACKMOUSEEVENT track = {};
       track.cbSize = sizeof(track);
       track.dwFlags = TME_LEAVE;
       track.hwndTrack = hwnd;
       TrackMouseEvent(&track);
 
-      const int closeIndex = self->HitTestClose(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+      const int closeIndex = self->HitTestClose(x, y);
+      const int tabIndex = closeIndex >= 0 ? -1 : self->HitTestTab(x, y);
+      bool needsRedraw = false;
       if (closeIndex != self->hoverCloseIndex_)
       {
         self->hoverCloseIndex_ = closeIndex;
+        needsRedraw = true;
+      }
+      if (tabIndex != self->hoverTabIndex_)
+      {
+        self->hoverTabIndex_ = tabIndex;
+        needsRedraw = true;
+      }
+      if (needsRedraw)
+      {
         InvalidateRect(hwnd, nullptr, TRUE);
       }
       return 0;
     }
     case WM_MOUSELEAVE:
-      if (self->hoverCloseIndex_ != -1)
+      if (GetCapture() != hwnd &&
+          (self->hoverCloseIndex_ != -1 || self->hoverTabIndex_ != -1))
       {
         self->hoverCloseIndex_ = -1;
+        self->hoverTabIndex_ = -1;
         InvalidateRect(hwnd, nullptr, TRUE);
       }
       return 0;

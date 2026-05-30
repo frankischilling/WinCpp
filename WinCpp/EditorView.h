@@ -45,6 +45,5 @@ private:
   std::string GetFirstLineUtf8() const;
 
   HWND hwnd_;
-  SyntaxRegistry syntax_;
   SyntaxHighlighter highlighter_;
 };

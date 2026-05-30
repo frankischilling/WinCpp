@@ -1,9 +1,11 @@
 #include "EditorView.h"
 
+#include <filesystem>
 #include <fstream>
 #include <Scintilla.h>
 
 #include "AppIds.h"
+#include "UiHelpers.h"
 
 namespace
 {
@@ -36,10 +38,7 @@ bool EditorView::Create(HWND parent, HINSTANCE instance)
   static bool s_scintillaRegistered = false;
   if (!s_scintillaRegistered)
   {
-    if (!Scintilla_RegisterClasses(instance))
-    {
-      return false;
-    }
+    Scintilla_RegisterClasses(instance);
     s_scintillaRegistered = true;
   }
 
@@ -70,7 +69,7 @@ bool EditorView::Create(HWND parent, HINSTANCE instance)
 void EditorView::LoadSyntaxDirectory(const std::wstring& directory)
 {
   std::string error;
-  if (!syntax_.LoadFromDirectory(directory, &error))
+  if (!SyntaxRegistry::LoadSharedDirectory(directory, &error))
   {
     OutputDebugStringA(error.c_str());
     OutputDebugStringA("\n");
@@ -79,13 +78,14 @@ void EditorView::LoadSyntaxDirectory(const std::wstring& directory)
 
 void EditorView::ApplySyntaxForPath(const std::wstring& filePath)
 {
-  if (!hwnd_)
+  if (!hwnd_ || filePath.empty() || !SyntaxRegistry::Shared().IsLoaded())
   {
     return;
   }
 
   const std::string firstLine = GetFirstLineUtf8();
-  const SyntaxDefinition* definition = syntax_.DetectForPath(filePath, firstLine);
+  const SyntaxDefinition* definition =
+      SyntaxRegistry::Shared().DetectForPath(filePath, firstLine);
   if (!definition)
   {
     return;
@@ -96,18 +96,39 @@ void EditorView::ApplySyntaxForPath(const std::wstring& filePath)
 
 bool EditorView::LoadFromFileIntoDocument(void* document, const std::wstring& path, std::string* error)
 {
-  if (!hwnd_ || !document)
+  if (!hwnd_)
   {
+    if (error)
+    {
+      *error = "Editor is not initialized.";
+    }
+    return false;
+  }
+
+  if (!document)
+  {
+    if (error)
+    {
+      *error = "Failed to create document buffer.";
+    }
     return false;
   }
 
   void* const previous = GetDocumentPointer();
-  SetDocument(document);
-  const bool loaded = LoadFromFile(path, error);
   if (previous != nullptr)
   {
-    SetDocumentIfNeeded(previous);
+    SendMessage(hwnd_, SCI_ADDREFDOCUMENT, 0, reinterpret_cast<LPARAM>(previous));
   }
+
+  SetDocument(document);
+  const bool loaded = LoadFromFile(path, error);
+
+  if (previous != nullptr)
+  {
+    SetDocument(previous);
+    SendMessage(hwnd_, SCI_RELEASEDOCUMENT, 0, reinterpret_cast<LPARAM>(previous));
+  }
+
   return loaded;
 }
 
@@ -118,7 +139,7 @@ bool EditorView::LoadFromFile(const std::wstring& path, std::string* error)
     return false;
   }
 
-  std::ifstream file(path, std::ios::binary);
+  std::ifstream file(std::filesystem::path(path), std::ios::binary);
   if (!file)
   {
     if (error)
@@ -158,7 +179,7 @@ bool EditorView::SaveToFile(const std::wstring& path, std::string* error)
     return false;
   }
 
-  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
   if (!file)
   {
     if (error)
@@ -269,6 +290,11 @@ void EditorView::ReleaseDocument(void* document)
     return;
   }
 
+  if (GetDocumentPointer() == document)
+  {
+    return;
+  }
+
   SendMessage(hwnd_, SCI_RELEASEDOCUMENT, 0, reinterpret_cast<LPARAM>(document));
 }
 
@@ -311,6 +337,7 @@ void EditorView::InitializeScintilla()
   SendMessage(hwnd_, SCI_SETCARETLINEBACK, RGB(242, 242, 242), 0);
   SendMessage(hwnd_, SCI_SETWRAPMODE, SC_WRAP_NONE, 0);
   SendMessage(hwnd_, SCI_SETMODEVENTMASK, SC_MODEVENTMASKALL, 0);
+  ApplyEditorUiFont(hwnd_);
 }
 
 void EditorView::SetTextUtf8(const std::string& text)

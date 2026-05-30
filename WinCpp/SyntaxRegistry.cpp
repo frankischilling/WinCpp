@@ -127,6 +127,33 @@ void AppendRulesFromNode(const YAML::Node& rulesNode,
 }
 }
 
+namespace
+{
+SyntaxRegistry g_sharedRegistry;
+bool g_sharedLoaded = false;
+std::filesystem::path g_sharedDirectory;
+}
+
+bool SyntaxRegistry::LoadSharedDirectory(const std::filesystem::path& directory, std::string* error)
+{
+  if (g_sharedLoaded && g_sharedDirectory == directory && g_sharedRegistry.IsLoaded())
+  {
+    return true;
+  }
+
+  g_sharedLoaded = g_sharedRegistry.LoadFromDirectory(directory, error);
+  if (g_sharedLoaded)
+  {
+    g_sharedDirectory = directory;
+  }
+  return g_sharedLoaded;
+}
+
+const SyntaxRegistry& SyntaxRegistry::Shared()
+{
+  return g_sharedRegistry;
+}
+
 bool SyntaxRegistry::LoadFromDirectory(const std::filesystem::path& directory, std::string* error)
 {
   definitions_.clear();

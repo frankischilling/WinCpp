@@ -30,10 +30,15 @@ struct SyntaxDefinition
 class SyntaxRegistry
 {
 public:
+  // Loaded once for all editor panes.
+  static bool LoadSharedDirectory(const std::filesystem::path& directory, std::string* error);
+  static const SyntaxRegistry& Shared();
+
   bool LoadFromDirectory(const std::filesystem::path& directory, std::string* error);
   const SyntaxDefinition* DetectForPath(const std::wstring& filePath,
                                         const std::string& firstLine) const;
   const std::vector<SyntaxDefinition>& Definitions() const { return definitions_; }
+  bool IsLoaded() const { return !definitions_.empty(); }
 
 private:
   bool LoadFile(const std::filesystem::path& path, SyntaxDefinition* outDef, std::string* error);

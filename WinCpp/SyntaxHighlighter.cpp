@@ -44,17 +44,19 @@ void SyntaxHighlighter::Apply(const SyntaxDefinition& definition)
 
   EnsureBaseStyles();
 
-  const LRESULT length = SendMessage(editor_, SCI_GETTEXTLENGTH, 0, 0);
+  const LRESULT length = SendMessage(editor_, SCI_GETLENGTH, 0, 0);
   if (length <= 0)
   {
     return;
   }
 
-  std::string text(static_cast<size_t>(length) + 1, '\0');
-  SendMessage(editor_, SCI_GETTEXT, length + 1, reinterpret_cast<LPARAM>(text.data()));
-  text.resize(static_cast<size_t>(length));
+  const size_t byteCount = static_cast<size_t>(length);
+  std::string text(byteCount + 1, '\0');
+  SendMessage(editor_, SCI_GETTEXT, static_cast<WPARAM>(length + 1),
+              reinterpret_cast<LPARAM>(text.data()));
+  text.resize(byteCount);
 
-  std::vector<unsigned char> styles(text.size(), STYLE_DEFAULT);
+  std::vector<unsigned char> styles(byteCount, STYLE_DEFAULT);
 
   for (const auto& rule : definition.rules)
   {
@@ -80,6 +82,7 @@ void SyntaxHighlighter::Apply(const SyntaxDefinition& definition)
   SendMessage(editor_, SCI_STARTSTYLING, 0, 0);
   SendMessage(editor_, SCI_SETSTYLINGEX, static_cast<WPARAM>(styles.size()),
               reinterpret_cast<LPARAM>(styles.data()));
+  InvalidateRect(editor_, nullptr, FALSE);
 }
 
 void SyntaxHighlighter::Clear()
