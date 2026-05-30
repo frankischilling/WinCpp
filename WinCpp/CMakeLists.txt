@@ -1,4 +1,4 @@
-# CMakeList.txt : CMake project for WinCpp, include source and define
+﻿# CMakeList.txt : CMake project for WinCpp, include source and define
 # project specific logic here.
 #
 
@@ -145,3 +145,4 @@ add_custom_command(TARGET WinCpp POST_BUILD
 )
 
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../tests ${CMAKE_CURRENT_BINARY_DIR}/tests)
+
