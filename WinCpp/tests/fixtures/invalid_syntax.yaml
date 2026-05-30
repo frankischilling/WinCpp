@@ -1,0 +1,4 @@
+filetype: broken
+detect:
+    filename: "["
+rules:

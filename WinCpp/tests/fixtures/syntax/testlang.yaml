@@ -1,0 +1,8 @@
+filetype: testlang
+
+detect:
+    filename: "\\.testlang$"
+
+rules:
+    - statement: "\\b(hello|world)\\b"
+    - comment: "#.*$"
