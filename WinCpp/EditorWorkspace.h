@@ -1,8 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <vector>
 
+#include "EditorSettings.h"
 #include "EditorSplitDrop.h"
 #include "EditorView.h"
 #include "TabBar.h"
@@ -34,6 +36,8 @@ public:
   void SetActiveGroup(int groupId);
 
   void LoadSyntaxDirectory(const std::wstring& directory);
+  void ApplySettingsToAllEditors(const EditorSettings& settings);
+  void ForEachEditor(const std::function<void(EditorView&)>& fn);
   void EnsureDefaultGroup();
   void SplitActive(EditorSplitDirection direction);
   void CloseActiveGroup();

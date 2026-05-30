@@ -1,9 +1,17 @@
 #include "MainWindow.h"
 
+#include "CommandRegistry.h"
+#include "DocumentCollectionLogic.h"
 #include "DocumentNaming.h"
+#include "PathLineParser.h"
+#include "ProcessOutput.h"
+#include "SessionState.h"
+#include "StatusBarModel.h"
+#include "TreeFilterLogic.h"
 
 #include <commdlg.h>
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <shlobj.h>
 #include <windowsx.h>
@@ -30,10 +38,18 @@ constexpr int kFindDlgFindNext = 3005;
 constexpr int kFindDlgReplace = 3006;
 constexpr int kFindDlgReplaceAll = 3007;
 constexpr int kFindDlgClose = 3008;
+constexpr int kFindDlgRegex = 3009;
+constexpr int kFindDlgFindPrevious = 3010;
 
 constexpr int kGoToDlgLineEdit = 3101;
 constexpr int kGoToDlgOk = 3102;
 constexpr int kGoToDlgCancel = 3103;
+
+constexpr int kRunDlgCommandEdit = 3301;
+constexpr int kRunDlgOk = 3302;
+constexpr int kRunDlgCancel = 3303;
+
+std::wstring g_lastRunCommand = L"echo hello";
 
 constexpr int kCreditsDlgText = 3201;
 constexpr int kCreditsDlgClose = 3202;
@@ -72,6 +88,27 @@ std::wstring Utf8ToWide(const std::string& text)
   std::wstring result(length, L'\0');
   MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
                       result.data(), length);
+  return result;
+}
+
+std::string WideToUtf8(const std::wstring& text)
+{
+  if (text.empty())
+  {
+    return {};
+  }
+
+  const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                         static_cast<int>(text.size()),
+                                         nullptr, 0, nullptr, nullptr);
+  if (length <= 0)
+  {
+    return {};
+  }
+
+  std::string result(length, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                      result.data(), length, nullptr, nullptr);
   return result;
 }
 
@@ -264,6 +301,11 @@ struct GoToDialogState
   int maxLine = 1;
 };
 
+struct RunDialogState
+{
+  MainWindow* window = nullptr;
+};
+
 LRESULT CALLBACK FindDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
   FindDialogState* state = reinterpret_cast<FindDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -298,13 +340,16 @@ LRESULT CALLBACK FindDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
       CreateDialogCheck(hwnd, L"Match case", kUiMargin, optionY, 120, kFindDlgMatchCase);
       CreateDialogCheck(hwnd, L"Whole word", kUiMargin + 128, optionY, 120, kFindDlgWholeWord);
+      CreateDialogCheck(hwnd, L"Regex", kUiMargin + 256, optionY, 80, kFindDlgRegex);
+      optionY += rowHeight;
 
       const int buttonY = client.bottom - kUiMargin - kUiButtonHeight;
       CreateDialogButton(hwnd, L"Find Next", kUiMargin, buttonY, 92, kFindDlgFindNext);
+      CreateDialogButton(hwnd, L"Find Previous", kUiMargin + 100, buttonY, 104, kFindDlgFindPrevious);
       if (state->replaceMode)
       {
-        CreateDialogButton(hwnd, L"Replace", kUiMargin + 100, buttonY, 92, kFindDlgReplace);
-        CreateDialogButton(hwnd, L"Replace All", kUiMargin + 200, buttonY, 92, kFindDlgReplaceAll);
+        CreateDialogButton(hwnd, L"Replace", kUiMargin + 210, buttonY, 92, kFindDlgReplace);
+        CreateDialogButton(hwnd, L"Replace All", kUiMargin + 308, buttonY, 92, kFindDlgReplaceAll);
         CreateDialogButton(hwnd, L"Close", client.right - kUiMargin - 84, buttonY, 84,
                            kFindDlgClose);
       }
@@ -327,6 +372,9 @@ LRESULT CALLBACK FindDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
       switch (LOWORD(wParam))
       {
         case kFindDlgFindNext:
+          PostMessageW(state->window->Hwnd(), WM_APP + 1, 1, reinterpret_cast<LPARAM>(hwnd));
+          return 0;
+        case kFindDlgFindPrevious:
           PostMessageW(state->window->Hwnd(), WM_APP + 1, 0, reinterpret_cast<LPARAM>(hwnd));
           return 0;
         case kFindDlgReplace:
@@ -397,6 +445,65 @@ LRESULT CALLBACK GoToDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
           PostMessageW(state->window->Hwnd(), WM_APP + 4, 0, reinterpret_cast<LPARAM>(hwnd));
           return 0;
         case kGoToDlgCancel:
+          DestroyWindow(hwnd);
+          return 0;
+        default:
+          break;
+      }
+      break;
+    }
+    case WM_CLOSE:
+      DestroyWindow(hwnd);
+      return 0;
+    default:
+      break;
+  }
+
+  return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK RunDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+  RunDialogState* state = reinterpret_cast<RunDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+  switch (msg)
+  {
+    case WM_CREATE:
+    {
+      auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+      state = reinterpret_cast<RunDialogState*>(create->lpCreateParams);
+      SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+
+      RECT client = {};
+      GetClientRect(hwnd, &client);
+
+      CreateWindowExW(0, L"STATIC", L"Command (cmd /c):", WS_CHILD | WS_VISIBLE, kUiMargin,
+                      kUiMargin + 2, client.right - 2 * kUiMargin, 20, hwnd, nullptr,
+                      GetModuleHandleW(nullptr), nullptr);
+      CreateLabeledEdit(hwnd, kUiMargin, kUiMargin + 24, client.right - 2 * kUiMargin,
+                        kRunDlgCommandEdit);
+
+      const int buttonY = client.bottom - kUiMargin - kUiButtonHeight;
+      CreateDialogButton(hwnd, L"Run", client.right - kUiMargin - 176, buttonY, 80, kRunDlgOk);
+      CreateDialogButton(hwnd, L"Cancel", client.right - kUiMargin - 84, buttonY, 84,
+                         kRunDlgCancel);
+
+      ApplyUiFontToDescendants(hwnd);
+      return 0;
+    }
+    case WM_COMMAND:
+    {
+      if (!state || !state->window)
+      {
+        return 0;
+      }
+
+      switch (LOWORD(wParam))
+      {
+        case kRunDlgOk:
+          PostMessageW(state->window->Hwnd(), WM_APP + 5, 0, reinterpret_cast<LPARAM>(hwnd));
+          return 0;
+        case kRunDlgCancel:
           DestroyWindow(hwnd);
           return 0;
         default:
@@ -507,7 +614,8 @@ MainWindow::MainWindow()
     outputPaneHeight_(180),
     showProjectPane_(true),
     showOutputPane_(true),
-    wordWrapEnabled_(false)
+    wordWrapEnabled_(false),
+    codeFoldingEnabled_(false)
 {
 }
 
@@ -597,10 +705,14 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
       InitCommonControlsEx(&icc);
 
       recentFiles_.Load();
+      editorSettings_.Load();
+      wordWrapEnabled_ = editorSettings_.wordWrap;
       CreateMenus();
       CreateAccelerators();
       CreateChildPanes();
       EnsureInitialDocument();
+      ApplyEditorSettingsToAllGroups();
+      LoadSession();
       UpdateRecentFilesMenu();
       LayoutChildren();
       return 0;
@@ -700,6 +812,16 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
       return 0;
     case WM_COMMAND:
     {
+      if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == kCtrlProjectFilter)
+      {
+        projectFilterText_ = GetWindowTextString(projectFilterEdit_);
+        if (!projectRootPath_.empty())
+        {
+          PopulateProjectTree(projectRootPath_);
+        }
+        return 0;
+      }
+
       const UINT command = LOWORD(wParam);
       switch (command)
       {
@@ -717,6 +839,12 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
           return 0;
         case kCmdFileSaveAs:
           SaveFileAs();
+          return 0;
+        case kCmdFileSaveAll:
+          SaveAllFiles();
+          return 0;
+        case kCmdFileCloseAll:
+          CloseAllDocuments();
           return 0;
         case kCmdFileOpenRecentClear:
           ClearRecentFiles();
@@ -762,8 +890,60 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         case kCmdEditGoToLine:
           ShowGoToLineDialog();
           return 0;
+        case kCmdEditFindPrevious:
+          if (findDialog_)
+          {
+            FindFromDialog(findDialog_, false);
+          }
+          else
+          {
+            ShowFindReplaceDialog(false);
+          }
+          return 0;
+        case kCmdEditDuplicateLine:
+          editorWorkspace_.ActiveEditor().DuplicateLine();
+          return 0;
+        case kCmdEditDeleteLine:
+          editorWorkspace_.ActiveEditor().DeleteLine();
+          return 0;
+        case kCmdEditMoveLineUp:
+          editorWorkspace_.ActiveEditor().MoveLineUp();
+          return 0;
+        case kCmdEditMoveLineDown:
+          editorWorkspace_.ActiveEditor().MoveLineDown();
+          return 0;
+        case kCmdEditTrimTrailingWhitespace:
+          editorWorkspace_.ActiveEditor().TrimTrailingWhitespace();
+          return 0;
+        case kCmdEditConvertTabsToSpaces:
+          editorWorkspace_.ActiveEditor().ConvertSelectionTabsToSpaces();
+          return 0;
+        case kCmdEditGotoMatchingBrace:
+          editorWorkspace_.ActiveEditor().GotoMatchingBrace();
+          return 0;
+        case kCmdEditCommandPalette:
+          ShowCommandPalette();
+          return 0;
         case kCmdViewWordWrap:
           ToggleWordWrap();
+          return 0;
+        case kCmdViewZoomIn:
+          ZoomIn();
+          return 0;
+        case kCmdViewZoomOut:
+          ZoomOut();
+          return 0;
+        case kCmdViewZoomReset:
+          ZoomReset();
+          return 0;
+        case kCmdViewCodeFolding:
+          ToggleCodeFolding();
+          return 0;
+        case kCmdViewRunCommand:
+          ShowRunCommandDialog();
+          return 0;
+        case kCmdTabPin:
+          PinActiveTab();
           return 0;
         case kCmdHelpAbout:
           MessageBoxW(hwnd_, BuildAboutText().c_str(), L"About WinCpp", MB_OK | MB_ICONINFORMATION);
@@ -823,6 +1003,10 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         {
           UpdateStatusBar();
         }
+        else if (notification->nmhdr.code == SCN_CHARADDED)
+        {
+          editorWorkspace_.ActiveEditor().OnEditorNotify(*notification);
+        }
         else if (notification->nmhdr.code == SCN_MODIFIED &&
                  (notification->modificationType & SC_MOD_INSERTTEXT ||
                   notification->modificationType & SC_MOD_DELETETEXT))
@@ -840,6 +1024,8 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
       break;
     }
     case WM_APP + 1:
+      FindFromDialog(reinterpret_cast<HWND>(lParam), wParam != 0);
+      return 0;
     case WM_APP + 2:
     case WM_APP + 3:
     {
@@ -848,6 +1034,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
       const HWND replaceEdit = GetDlgItem(dialog, kFindDlgReplaceEdit);
       const bool matchCase = IsDlgButtonChecked(dialog, kFindDlgMatchCase) == BST_CHECKED;
       const bool wholeWord = IsDlgButtonChecked(dialog, kFindDlgWholeWord) == BST_CHECKED;
+      const bool regex = IsDlgButtonChecked(dialog, kFindDlgRegex) == BST_CHECKED;
       const std::wstring findText = GetWindowTextString(findEdit);
       const std::wstring replaceText = replaceEdit ? GetWindowTextString(replaceEdit) : L"";
 
@@ -857,20 +1044,15 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
       }
 
-      if (msg == WM_APP + 1)
+      if (msg == WM_APP + 2)
       {
-        if (!editorWorkspace_.ActiveEditor().FindNext(findText, matchCase, wholeWord, true))
-        {
-          MessageBoxW(hwnd_, L"No matches found.", L"Find", MB_OK | MB_ICONINFORMATION);
-        }
-      }
-      else if (msg == WM_APP + 2)
-      {
-        editorWorkspace_.ActiveEditor().ReplaceSelection(findText, replaceText, matchCase, wholeWord);
+        editorWorkspace_.ActiveEditor().ReplaceSelection(findText, replaceText, matchCase, wholeWord,
+                                                         regex);
       }
       else if (msg == WM_APP + 3)
       {
-        const int count = editorWorkspace_.ActiveEditor().ReplaceAll(findText, replaceText, matchCase, wholeWord);
+        const int count = editorWorkspace_.ActiveEditor().ReplaceAll(findText, replaceText, matchCase,
+                                                                     wholeWord, regex);
         wchar_t message[64] = {};
         swprintf_s(message, L"Replaced %d occurrence(s).", count);
         MessageBoxW(hwnd_, message, L"Replace All", MB_OK | MB_ICONINFORMATION);
@@ -893,7 +1075,46 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
       UpdateStatusBar();
       return 0;
     }
+    case WM_APP + 5:
+    {
+      HWND dialog = reinterpret_cast<HWND>(lParam);
+      const std::wstring command = GetWindowTextString(GetDlgItem(dialog, kRunDlgCommandEdit));
+      DestroyWindow(dialog);
+      if (command.empty())
+      {
+        MessageBoxW(hwnd_, L"Enter a command to run.", L"Run Command", MB_OK | MB_ICONINFORMATION);
+        return 0;
+      }
+
+      g_lastRunCommand = command;
+      const std::wstring commandLine = L"cmd /c " + command;
+      std::string output;
+      int exitCode = 0;
+      if (ProcessOutput::RunCaptureStdout(commandLine, &output, &exitCode))
+      {
+        if (!output.empty() && output.back() != '\n')
+        {
+          output.push_back('\n');
+        }
+        wchar_t footer[64] = {};
+        swprintf_s(footer, L"\r\n[exit code %d]", exitCode);
+        output += WideToUtf8(footer);
+        SetWindowTextA(outputPane_, output.c_str());
+        showOutputPane_ = true;
+        CheckMenuItem(GetMenu(hwnd_), kCmdViewOutputPane, MF_BYCOMMAND | MF_CHECKED);
+        LayoutChildren();
+      }
+      else
+      {
+        MessageBoxW(hwnd_, L"Failed to run command.", L"Run Command", MB_OK | MB_ICONERROR);
+      }
+      return 0;
+    }
     case WM_DESTROY:
+      SaveSession();
+      editorSettings_.wordWrap = wordWrapEnabled_;
+      editorSettings_.zoom = editorWorkspace_.ActiveEditor().GetZoom();
+      editorSettings_.Save();
       if (accelerators_)
       {
         DestroyAcceleratorTable(accelerators_);
@@ -1026,6 +1247,8 @@ void MainWindow::CreateMenus()
   AppendMenuW(fileMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(fileMenu, MF_STRING, kCmdFileSave, L"&Save\tCtrl+S");
   AppendMenuW(fileMenu, MF_STRING, kCmdFileSaveAs, L"Save &As...");
+  AppendMenuW(fileMenu, MF_STRING, kCmdFileSaveAll, L"Save A&ll");
+  AppendMenuW(fileMenu, MF_STRING, kCmdFileCloseAll, L"Close A&ll");
   AppendMenuW(fileMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(fileMenu, MF_STRING, kCmdFileExit, L"E&xit");
 
@@ -1038,12 +1261,27 @@ void MainWindow::CreateMenus()
   AppendMenuW(editMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(editMenu, MF_STRING, kCmdEditFind, L"&Find...\tCtrl+F");
   AppendMenuW(editMenu, MF_STRING, kCmdEditReplace, L"&Replace...\tCtrl+H");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditFindPrevious, L"Find &Previous\tShift+F3");
   AppendMenuW(editMenu, MF_STRING, kCmdEditGoToLine, L"&Go To Line...\tCtrl+G");
+  AppendMenuW(editMenu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(editMenu, MF_STRING, kCmdEditDuplicateLine, L"&Duplicate Line\tCtrl+D");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditDeleteLine, L"De&lete Line");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditMoveLineUp, L"Move Line &Up");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditMoveLineDown, L"Move Line &Down");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditTrimTrailingWhitespace, L"Trim Trailing &Whitespace");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditConvertTabsToSpaces, L"Convert Tabs to Spaces");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditGotoMatchingBrace, L"Go to Matching &Brace");
+  AppendMenuW(editMenu, MF_STRING, kCmdEditCommandPalette, L"&Command Palette\tCtrl+Shift+P");
 
   AppendMenuW(viewMenu, MF_STRING | MF_CHECKED, kCmdViewProjectPane, L"&Project Pane");
   AppendMenuW(viewMenu, MF_STRING | MF_CHECKED, kCmdViewOutputPane, L"&Output Pane");
   AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(viewMenu, MF_STRING, kCmdViewWordWrap, L"&Word Wrap");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewCodeFolding, L"Code &Folding");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewZoomIn, L"Zoom &In");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewZoomOut, L"Zoom &Out");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewZoomReset, L"Zoom &Reset");
+  AppendMenuW(viewMenu, MF_STRING, kCmdViewRunCommand, L"&Run Command...");
   AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(viewMenu, MF_STRING, kCmdViewSplitRight, L"Split Editor &Right");
   AppendMenuW(viewMenu, MF_STRING, kCmdViewSplitDown, L"Split Editor &Down");
@@ -1069,6 +1307,10 @@ void MainWindow::CreateAccelerators()
       {FVIRTKEY | FCONTROL, 'F', kCmdEditFind},
       {FVIRTKEY | FCONTROL, 'H', kCmdEditReplace},
       {FVIRTKEY | FCONTROL, 'G', kCmdEditGoToLine},
+      {FVIRTKEY | FCONTROL, 'D', kCmdEditDuplicateLine},
+      {FVIRTKEY, VK_F3, kCmdEditFind},
+      {FVIRTKEY | FSHIFT, VK_F3, kCmdEditFindPrevious},
+      {FVIRTKEY | FCONTROL | FSHIFT, 'P', kCmdEditCommandPalette},
       {FVIRTKEY | FCONTROL, 'W', kCmdTabClose},
       {FVIRTKEY | FCONTROL, VK_OEM_5, kCmdViewSplitRight},
   };
@@ -1123,9 +1365,15 @@ void MainWindow::CreateChildPanes()
       nullptr);
 
   tabContextMenu_ = CreatePopupMenu();
+  projectFilterEdit_ = CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCtrlProjectFilter)), GetModuleHandleW(nullptr),
+      nullptr);
+
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabClose, L"Close");
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabCloseOthers, L"Close Others");
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabCloseAll, L"Close All");
+  AppendMenuW(tabContextMenu_, MF_STRING, kCmdTabPin, L"Pin Tab");
   AppendMenuW(tabContextMenu_, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdViewSplitRight, L"Split Right");
   AppendMenuW(tabContextMenu_, MF_STRING, kCmdViewSplitDown, L"Split Down");
@@ -1169,6 +1417,7 @@ void MainWindow::CreateChildPanes()
   SendMessageW(statusBar_, SB_SETBORDERS, 0, reinterpret_cast<LPARAM>(statusBorders));
 
   ApplyUiFont(projectPaneHeader_);
+  ApplyUiFont(projectFilterEdit_);
   ApplyUiFont(projectTree_);
   ApplyUiFont(outputPane_);
   ApplyUiFont(statusBar_);
@@ -1445,6 +1694,11 @@ void MainWindow::SaveFile()
     return;
   }
 
+  if (editorSettings_.trimTrailingWhitespaceOnSave)
+  {
+    editorWorkspace_.ActiveEditor().TrimTrailingWhitespace();
+  }
+
   std::string error;
   if (!editorWorkspace_.ActiveEditor().SaveToFile(doc.path, &error))
   {
@@ -1507,23 +1761,21 @@ void MainWindow::UpdateStatusBar()
     return;
   }
 
-  std::wstring pathLabel = L"Untitled";
-  if (activeDocumentIndex_ >= 0 && activeDocumentIndex_ < static_cast<int>(documents_.size()) &&
-      !documents_[activeDocumentIndex_].path.empty())
+  StatusBarModelInput input;
+  input.line = editorWorkspace_.ActiveEditor().GetCurrentLine();
+  input.column = editorWorkspace_.ActiveEditor().GetCurrentColumn();
+  input.selectionLength = editorWorkspace_.ActiveEditor().GetSelectionLength();
+  input.modified = editorWorkspace_.ActiveEditor().IsModified();
+  input.tabSize = editorSettings_.tabSize;
+  input.insertSpaces = editorSettings_.tabToSpaces;
+  input.languageName = editorWorkspace_.ActiveEditor().CurrentLanguageName();
+  if (activeDocumentIndex_ >= 0 && activeDocumentIndex_ < static_cast<int>(documents_.size()))
   {
-    pathLabel = documents_[activeDocumentIndex_].path;
+    input.path = documents_[activeDocumentIndex_].path;
   }
 
-  if (editorWorkspace_.ActiveEditor().IsModified())
-  {
-    pathLabel += L" *";
-  }
-
-  wchar_t caretLabel[64] = {};
-  swprintf_s(caretLabel, L"Ln %d, Col %d", editorWorkspace_.ActiveEditor().GetCurrentLine(), editorWorkspace_.ActiveEditor().GetCurrentColumn());
-
-  SendMessageW(statusBar_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(pathLabel.c_str()));
-  SendMessageW(statusBar_, SB_SETTEXTW, 1, reinterpret_cast<LPARAM>(caretLabel));
+  const std::wstring status = StatusBarModel::Format(input);
+  SendMessageW(statusBar_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(status.c_str()));
 }
 
 void MainWindow::UpdateRecentFilesMenu()
@@ -1565,9 +1817,11 @@ void MainWindow::ClearRecentFiles()
 void MainWindow::ToggleWordWrap()
 {
   wordWrapEnabled_ = !wordWrapEnabled_;
-  editorWorkspace_.ActiveEditor().SetWordWrap(wordWrapEnabled_);
+  editorSettings_.wordWrap = wordWrapEnabled_;
+  editorWorkspace_.ApplySettingsToAllEditors(editorSettings_);
   CheckMenuItem(GetMenu(hwnd_), kCmdViewWordWrap,
                 MF_BYCOMMAND | (wordWrapEnabled_ ? MF_CHECKED : MF_UNCHECKED));
+  editorSettings_.Save();
 }
 
 void MainWindow::ShowFindReplaceDialog(bool replaceMode)
@@ -1584,7 +1838,7 @@ void MainWindow::ShowFindReplaceDialog(bool replaceMode)
   state.replaceMode = replaceMode;
 
   const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
-  const int height = replaceMode ? 220 : 180;
+  const int height = replaceMode ? 250 : 210;
   const int width = 420;
   HWND dialog = CreateWindowExW(
       WS_EX_DLGMODALFRAME,
@@ -1602,6 +1856,7 @@ void MainWindow::ShowFindReplaceDialog(bool replaceMode)
 
   if (dialog)
   {
+    findDialog_ = dialog;
     CenterDialogOnWindow(dialog, width, height);
     SetForegroundWindow(dialog);
   }
@@ -1724,6 +1979,18 @@ void MainWindow::AddTreeDirectory(HTREEITEM parent, const std::filesystem::path&
     }
     else if (entry.is_regular_file(ec))
     {
+      if (!projectRootPath_.empty() && !projectFilterText_.empty())
+      {
+        std::error_code relEc;
+        const std::wstring relative =
+            std::filesystem::relative(entry.path(), std::filesystem::path(projectRootPath_), relEc)
+                .wstring();
+        if (!relEc && !TreeFilterLogic::PathMatchesFilter(relative, projectFilterText_))
+        {
+          continue;
+        }
+      }
+
       const HTREEITEM fileItem = InsertTreeItem(parent, name, false);
       treeItemPaths_[fileItem] = entry.path().wstring();
     }
@@ -1738,6 +2005,7 @@ void MainWindow::ClearProjectTree()
 
 void MainWindow::PopulateProjectTree(const std::wstring& rootPath)
 {
+  projectRootPath_ = rootPath;
   ClearProjectTree();
 
   const std::filesystem::path root(rootPath);
@@ -1763,7 +2031,15 @@ void MainWindow::OnProjectTreeDoubleClick()
   const auto it = treeItemPaths_.find(selected);
   if (it != treeItemPaths_.end())
   {
-    OpenFileAtPath(it->second, true);
+    if (const auto target = PathLineParser::Parse(it->second))
+    {
+      OpenFileAtPath(target->path, true);
+      editorWorkspace_.ActiveEditor().GoToLine(target->line);
+    }
+    else
+    {
+      OpenFileAtPath(it->second, true);
+    }
   }
 }
 
@@ -1837,9 +2113,18 @@ void MainWindow::LayoutChildren()
       MoveWindow(projectPaneHeader_, 0, 0, leftWidth, projectPaneHeaderHeight_, TRUE);
       ShowWindow(projectPaneHeader_, SW_SHOW);
     }
+    constexpr int kFilterHeight = 24;
+    if (projectFilterEdit_)
+    {
+      MoveWindow(projectFilterEdit_, 0, projectPaneHeaderHeight_, sidebarContentWidth, kFilterHeight,
+                 TRUE);
+      ShowWindow(projectFilterEdit_, SW_SHOW);
+    }
     if (projectTree_)
     {
-      MoveWindow(projectTree_, 0, projectPaneHeaderHeight_, sidebarContentWidth, treeHeight, TRUE);
+      const int treeTop = projectPaneHeaderHeight_ + kFilterHeight;
+      const int adjustedTreeHeight = treeHeight > kFilterHeight ? treeHeight - kFilterHeight : 0;
+      MoveWindow(projectTree_, 0, treeTop, sidebarContentWidth, adjustedTreeHeight, TRUE);
       ShowWindow(projectTree_, SW_SHOW);
     }
     if (projectPaneDivider_)
@@ -2284,5 +2569,222 @@ void MainWindow::ShowTabContextMenu(int tabIndex)
   if (command != 0)
   {
     SendMessageW(hwnd_, WM_COMMAND, command, 0);
+  }
+}
+
+void MainWindow::ApplyEditorSettingsToAllGroups()
+{
+  editorWorkspace_.ApplySettingsToAllEditors(editorSettings_);
+  wordWrapEnabled_ = editorSettings_.wordWrap;
+  CheckMenuItem(GetMenu(hwnd_), kCmdViewWordWrap,
+                MF_BYCOMMAND | (wordWrapEnabled_ ? MF_CHECKED : MF_UNCHECKED));
+}
+
+void MainWindow::FindFromDialog(HWND dialog, bool forward)
+{
+  if (!dialog)
+  {
+    return;
+  }
+
+  const HWND findEdit = GetDlgItem(dialog, kFindDlgFindEdit);
+  const bool matchCase = IsDlgButtonChecked(dialog, kFindDlgMatchCase) == BST_CHECKED;
+  const bool wholeWord = IsDlgButtonChecked(dialog, kFindDlgWholeWord) == BST_CHECKED;
+  const bool regex = IsDlgButtonChecked(dialog, kFindDlgRegex) == BST_CHECKED;
+  const std::wstring findText = GetWindowTextString(findEdit);
+  if (findText.empty())
+  {
+    MessageBoxW(hwnd_, L"Enter text to find.", L"Find", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+
+  SearchOptions options;
+  options.matchCase = matchCase;
+  options.wholeWord = wholeWord;
+  options.regex = regex;
+  options.forward = forward;
+
+  EditorView& editor = editorWorkspace_.ActiveEditor();
+  if (!editor.FindNext(findText, options))
+  {
+    MessageBoxW(hwnd_, L"No matches found.", L"Find", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+
+  editor.UpdateFindHighlights(findText, options);
+}
+
+void MainWindow::SaveAllFiles()
+{
+  std::vector<DocumentState> states;
+  states.reserve(documents_.size());
+  for (const EditorDocument& doc : documents_)
+  {
+    states.push_back({doc.modified, doc.path});
+  }
+
+  for (size_t index : DocumentCollectionLogic::IndicesNeedingSave(states))
+  {
+    if (!SaveDocumentAt(static_cast<int>(index)))
+    {
+      break;
+    }
+  }
+}
+
+void MainWindow::ToggleCodeFolding()
+{
+  codeFoldingEnabled_ = !codeFoldingEnabled_;
+  editorWorkspace_.ForEachEditor(
+      [&](EditorView& editor) { editor.EnableCodeFolding(codeFoldingEnabled_); });
+  CheckMenuItem(GetMenu(hwnd_), kCmdViewCodeFolding,
+                MF_BYCOMMAND | (codeFoldingEnabled_ ? MF_CHECKED : MF_UNCHECKED));
+}
+
+void MainWindow::ZoomIn()
+{
+  editorWorkspace_.ActiveEditor().ZoomDelta(1);
+  editorSettings_.zoom = editorWorkspace_.ActiveEditor().GetZoom();
+  editorSettings_.Save();
+}
+
+void MainWindow::ZoomOut()
+{
+  editorWorkspace_.ActiveEditor().ZoomDelta(-1);
+  editorSettings_.zoom = editorWorkspace_.ActiveEditor().GetZoom();
+  editorSettings_.Save();
+}
+
+void MainWindow::ZoomReset()
+{
+  while (editorWorkspace_.ActiveEditor().GetZoom() > 0)
+  {
+    editorWorkspace_.ActiveEditor().ZoomDelta(-1);
+  }
+  while (editorWorkspace_.ActiveEditor().GetZoom() < 0)
+  {
+    editorWorkspace_.ActiveEditor().ZoomDelta(1);
+  }
+  editorSettings_.zoom = 0;
+  editorSettings_.Save();
+}
+
+void MainWindow::PinActiveTab()
+{
+  if (activeDocumentIndex_ < 0 || activeDocumentIndex_ >= static_cast<int>(documents_.size()))
+  {
+    return;
+  }
+
+  documents_[activeDocumentIndex_].pinned = !documents_[activeDocumentIndex_].pinned;
+  SyncTabBar();
+}
+
+void MainWindow::ShowCommandPalette()
+{
+  const std::wstring query = L"save";
+  const auto commands = CommandRegistry::Filter(CommandRegistry::DefaultCommands(), query);
+  if (commands.empty())
+  {
+    return;
+  }
+
+  SendMessageW(hwnd_, WM_COMMAND, commands.front().id, 0);
+}
+
+void MainWindow::ShowRunCommandDialog()
+{
+  static bool runClassRegistered = false;
+  if (!runClassRegistered)
+  {
+    RegisterDialogClass(L"WinCppRunDialog", RunDialogProc);
+    runClassRegistered = true;
+  }
+
+  static RunDialogState state;
+  state.window = this;
+
+  HWND dialog = CreateWindowExW(
+      WS_EX_DLGMODALFRAME,
+      L"WinCppRunDialog",
+      L"Run Command",
+      WS_CAPTION | WS_SYSMENU | WS_POPUP,
+      CW_USEDEFAULT,
+      CW_USEDEFAULT,
+      520,
+      140,
+      hwnd_,
+      nullptr,
+      GetModuleHandleW(nullptr),
+      &state);
+
+  if (dialog)
+  {
+    SetWindowTextW(GetDlgItem(dialog, kRunDlgCommandEdit), g_lastRunCommand.c_str());
+    CenterDialogOnWindow(dialog, 520, 140);
+    SetForegroundWindow(dialog);
+  }
+}
+
+void MainWindow::LoadSession()
+{
+  std::filesystem::path sessionPath(editorSettings_.ConfigPath());
+  sessionPath += L".session";
+  std::ifstream file(sessionPath, std::ios::binary);
+  if (!file)
+  {
+    return;
+  }
+
+  const std::string json((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  SessionState state;
+  if (!SessionStateCodec::Deserialize(json, &state))
+  {
+    return;
+  }
+
+  if (!state.projectRoot.empty() && std::filesystem::is_directory(state.projectRoot))
+  {
+    showProjectPane_ = state.showProjectPane;
+    CheckMenuItem(GetMenu(hwnd_), kCmdViewProjectPane,
+                    MF_BYCOMMAND | (showProjectPane_ ? MF_CHECKED : MF_UNCHECKED));
+    PopulateProjectTree(state.projectRoot);
+  }
+
+  for (const SessionTab& tab : state.tabs)
+  {
+    if (!tab.path.empty())
+    {
+      OpenFileAtPath(tab.path, false);
+    }
+  }
+
+  LayoutChildren();
+}
+
+void MainWindow::SaveSession()
+{
+  SessionState state;
+  state.activeGroupId = editorWorkspace_.ActiveGroupId();
+  state.projectRoot = projectRootPath_;
+  state.showProjectPane = showProjectPane_;
+  for (const EditorDocument& doc : documents_)
+  {
+    if (doc.path.empty())
+    {
+      continue;
+    }
+    SessionTab tab;
+    tab.path = doc.path;
+    tab.pinned = doc.pinned;
+    state.tabs.push_back(tab);
+  }
+
+  std::filesystem::path sessionPath(editorSettings_.ConfigPath());
+  sessionPath += L".session";
+  std::ofstream file(sessionPath, std::ios::binary | std::ios::trunc);
+  if (file)
+  {
+    file << SessionStateCodec::Serialize(state);
   }
 }

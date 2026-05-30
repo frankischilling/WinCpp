@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "EditorSettings.h"
 #include "EditorView.h"
 #include "EditorWorkspace.h"
 #include "RecentFilesStore.h"
@@ -15,7 +16,9 @@ struct EditorDocument
   std::wstring path;
   std::wstring tabTitle;
   std::wstring displayTitle;
+  std::wstring languageOverride;
   bool modified = false;
+  bool pinned = false;
 };
 
 class MainWindow
@@ -51,6 +54,7 @@ private:
   void OpenFolder();
   void SaveFile();
   void SaveFileAs();
+  void SaveAllFiles();
   bool SaveDocumentAt(int index);
   void UpdateStatusBar();
   void UpdateRecentFilesMenu();
@@ -58,8 +62,19 @@ private:
   void ToggleProjectPane();
   void ToggleOutputPane();
   void ToggleWordWrap();
+  void ToggleCodeFolding();
+  void ZoomIn();
+  void ZoomOut();
+  void ZoomReset();
+  void PinActiveTab();
   void ShowFindReplaceDialog(bool replaceMode);
   void ShowGoToLineDialog();
+  void ShowCommandPalette();
+  void ShowRunCommandDialog();
+  void FindFromDialog(HWND dialog, bool forward);
+  void LoadSession();
+  void SaveSession();
+  void ApplyEditorSettingsToAllGroups();
   void PopulateProjectTree(const std::wstring& rootPath);
   void ClearProjectTree();
   void AddTreeDirectory(HTREEITEM parent, const std::filesystem::path& directory);
@@ -106,9 +121,12 @@ private:
   int contextMenuTabIndex_;
 
   RecentFilesStore recentFiles_;
+  EditorSettings editorSettings_;
   HMENU recentFilesMenu_;
   HMENU tabContextMenu_;
   std::unordered_map<HTREEITEM, std::wstring> treeItemPaths_;
+  std::wstring projectRootPath_;
+  std::wstring projectFilterText_;
 
   int projectPaneWidth_;
   int projectPaneHeaderHeight_;
@@ -117,6 +135,9 @@ private:
   bool showProjectPane_;
   bool showOutputPane_;
   bool wordWrapEnabled_;
+  bool codeFoldingEnabled_;
+  HWND findDialog_ = nullptr;
+  HWND projectFilterEdit_ = nullptr;
   HBRUSH chromeBackgroundBrush_ = nullptr;
   HBRUSH chromeSidebarHeaderBrush_ = nullptr;
   HBRUSH chromeSidebarBorderBrush_ = nullptr;

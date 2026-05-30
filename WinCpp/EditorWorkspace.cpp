@@ -237,6 +237,19 @@ void EditorWorkspace::LoadSyntaxDirectory(const std::wstring& directory)
   }
 }
 
+void EditorWorkspace::ApplySettingsToAllEditors(const EditorSettings& settings)
+{
+  ForEachEditor([&](EditorView& editor) { editor.ApplySettings(settings); });
+}
+
+void EditorWorkspace::ForEachEditor(const std::function<void(EditorView&)>& fn)
+{
+  for (auto& group : groups_)
+  {
+    fn(group->editor);
+  }
+}
+
 void EditorWorkspace::EnsureDefaultGroup()
 {
   if (!groups_.empty() && root_)
@@ -456,6 +469,7 @@ void EditorWorkspace::SplitActive(EditorSplitDirection direction)
     return;
   }
 
+  const int sourceGroupId = activeGroupId_;
   const int docIndex = ActiveDocumentIndex();
   const int newGroupId = CreateGroup();
   EditorGroup* target = FindGroup(newGroupId);
@@ -464,24 +478,43 @@ void EditorWorkspace::SplitActive(EditorSplitDirection direction)
     return;
   }
 
-  if (docIndex >= 0)
-  {
-    target->documentIndices.push_back(docIndex);
-    target->selectedTabIndex = 0;
-  }
-
-  if (!SplitGroupLeaf(activeGroupId_, newGroupId, direction))
+  if (!SplitGroupLeaf(sourceGroupId, newGroupId, direction))
   {
     DestroyGroup(newGroupId);
     return;
   }
 
+  // Move the live Scintilla HWND into the new pane so we do not paint two full editors
+  // for the same document.
+  SwapGroupEditors(*source, *target);
+
+  if (docIndex >= 0)
+  {
+    target->documentIndices.clear();
+    target->documentIndices.push_back(docIndex);
+    target->selectedTabIndex = 0;
+
+    auto& indices = source->documentIndices;
+    indices.erase(std::remove(indices.begin(), indices.end(), docIndex), indices.end());
+    if (source->selectedTabIndex >= static_cast<int>(indices.size()))
+    {
+      source->selectedTabIndex =
+          indices.empty() ? -1 : static_cast<int>(indices.size()) - 1;
+    }
+  }
+
   activeGroupId_ = newGroupId;
   Layout();
 
-  if (notifyHwnd_ && docIndex >= 0)
+  if (notifyHwnd_)
   {
     SendMessageW(notifyHwnd_, WM_WORKSPACE_TAB_SELECT, 0, static_cast<LPARAM>(newGroupId));
+    if (source->selectedTabIndex >= 0 && !source->documentIndices.empty())
+    {
+      SendMessageW(notifyHwnd_, WM_WORKSPACE_TAB_SELECT,
+                   static_cast<WPARAM>(source->selectedTabIndex),
+                   static_cast<LPARAM>(sourceGroupId));
+    }
   }
 }
 

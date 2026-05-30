@@ -27,4 +27,32 @@ int HitTestInsertIndex(int clientX, int scrollOffset, const std::vector<RECT>& t
 
   return static_cast<int>(tabRects.size());
 }
+
+std::vector<int> SortIndicesPinnedFirst(const std::vector<int>& indices,
+                                        const std::vector<bool>& pinned)
+{
+  std::vector<int> result;
+  if (indices.size() != pinned.size())
+  {
+    return indices;
+  }
+
+  for (size_t i = 0; i < indices.size(); ++i)
+  {
+    if (pinned[i])
+    {
+      result.push_back(indices[i]);
+    }
+  }
+
+  for (size_t i = 0; i < indices.size(); ++i)
+  {
+    if (!pinned[i])
+    {
+      result.push_back(indices[i]);
+    }
+  }
+
+  return result;
+}
 }

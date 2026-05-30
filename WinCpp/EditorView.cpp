@@ -1,14 +1,35 @@
 #include "EditorView.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <Scintilla.h>
 
 #include "AppIds.h"
+#include "IndentLogic.h"
 #include "UiHelpers.h"
 
 namespace
 {
+std::wstring Utf8ToWide(const std::string& text)
+{
+  if (text.empty())
+  {
+    return {};
+  }
+
+  const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                                         nullptr, 0);
+  if (length <= 0)
+  {
+    return {};
+  }
+
+  std::wstring result(length, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), result.data(), length);
+  return result;
+}
+
 std::string WideToUtf8(const std::wstring& text)
 {
   if (text.empty())
@@ -92,6 +113,12 @@ void EditorView::ApplySyntaxForPath(const std::wstring& filePath)
   }
 
   highlighter_.Apply(*definition);
+  languageName_ = Utf8ToWide(definition->filetype);
+}
+
+std::wstring EditorView::CurrentLanguageName() const
+{
+  return languageName_;
 }
 
 bool EditorView::LoadFromFileIntoDocument(void* document, const std::wstring& path, std::string* error)
@@ -322,22 +349,76 @@ int EditorView::GetCurrentColumn() const
   return static_cast<int>(col) + 1;
 }
 
+void EditorView::UpdateLineNumberMarginWidth()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  const int lineCount = static_cast<int>(SendMessage(hwnd_, SCI_GETLINECOUNT, 0, 0));
+  int digits = 1;
+  for (int value = lineCount; value >= 10; value /= 10)
+  {
+    ++digits;
+  }
+
+  const std::string sample(static_cast<size_t>(digits), '9');
+  const int charWidth = static_cast<int>(SendMessage(
+      hwnd_, SCI_TEXTWIDTH, STYLE_DEFAULT, reinterpret_cast<LPARAM>(sample.c_str())));
+  SendMessage(hwnd_, SCI_SETMARGINWIDTHN, 0, static_cast<LPARAM>((std::max)(charWidth + 6, 24)));
+}
+
 void EditorView::InitializeScintilla()
 {
   SendMessage(hwnd_, SCI_SETCODEPAGE, SC_CP_UTF8, 0);
   SendMessage(hwnd_, SCI_SETEOLMODE, SC_EOL_LF, 0);
   SendMessage(hwnd_, SCI_SETSTYLEBITS, 8, 0);
-  SendMessage(hwnd_, SCI_SETMARGINLEFT, 0, 4);
-
+  SendMessage(hwnd_, SCI_SETMARGINLEFT, 0, 0);
   SendMessage(hwnd_, SCI_SETMARGINTYPEN, 0, SC_MARGIN_NUMBER);
-  SendMessage(hwnd_, SCI_SETMARGINWIDTHN, 0, 44);
   SendMessage(hwnd_, SCI_SETMARGINSENSITIVEN, 0, 0);
+  SendMessage(hwnd_, SCI_STYLESETFORE, STYLE_LINENUMBER, RGB(128, 128, 128));
+  SendMessage(hwnd_, SCI_STYLESETBACK, STYLE_LINENUMBER, RGB(245, 245, 245));
+  UpdateLineNumberMarginWidth();
 
   SendMessage(hwnd_, SCI_SETCARETLINEVISIBLE, 1, 0);
   SendMessage(hwnd_, SCI_SETCARETLINEBACK, RGB(242, 242, 242), 0);
   SendMessage(hwnd_, SCI_SETWRAPMODE, SC_WRAP_NONE, 0);
   SendMessage(hwnd_, SCI_SETMODEVENTMASK, SC_MODEVENTMASKALL, 0);
+  SendMessage(hwnd_, SCI_SETINDICATORVALUE, 0, 1);
+  SendMessage(hwnd_, SCI_INDICSETSTYLE, 0, INDIC_FULLBOX);
+  SendMessage(hwnd_, SCI_INDICSETFORE, 0, RGB(255, 230, 150));
+  SendMessage(hwnd_, SCI_INDICSETALPHA, 0, 80);
   ApplyEditorUiFont(hwnd_);
+  ApplySettings(EditorSettings::Defaults());
+}
+
+void EditorView::ApplySettings(const EditorSettings& settings)
+{
+  settings_ = settings;
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_SETTABWIDTH, settings_.tabSize, 0);
+  SendMessage(hwnd_, SCI_SETUSETABS, settings_.tabToSpaces ? 0 : 1, 0);
+  SetWordWrap(settings_.wordWrap);
+  SetBraceMatching(settings_.matchBrace);
+  SendMessage(hwnd_, SCI_SETZOOM, settings_.zoom, 0);
+  UpdateLineNumberMarginWidth();
+}
+
+int EditorView::GetSelectionLength() const
+{
+  if (!hwnd_)
+  {
+    return 0;
+  }
+
+  const LRESULT start = SendMessage(hwnd_, SCI_GETSELECTIONSTART, 0, 0);
+  const LRESULT end = SendMessage(hwnd_, SCI_GETSELECTIONEND, 0, 0);
+  return static_cast<int>(end > start ? end - start : start - end);
 }
 
 void EditorView::SetTextUtf8(const std::string& text)
@@ -348,6 +429,7 @@ void EditorView::SetTextUtf8(const std::string& text)
   }
 
   SendMessage(hwnd_, SCI_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()));
+  UpdateLineNumberMarginWidth();
 }
 
 std::string EditorView::GetTextUtf8() const
@@ -371,9 +453,23 @@ std::string EditorView::GetTextUtf8() const
 
 bool EditorView::FindNext(const std::wstring& text, bool matchCase, bool wholeWord, bool forward)
 {
+  SearchOptions options;
+  options.matchCase = matchCase;
+  options.wholeWord = wholeWord;
+  options.forward = forward;
+  return FindNext(text, options);
+}
+
+bool EditorView::FindNext(const std::wstring& text, const SearchOptions& options)
+{
   if (!hwnd_ || text.empty())
   {
     return false;
+  }
+
+  if (options.regex)
+  {
+    return FindNextInBuffer(text, options);
   }
 
   const std::string needle = WideToUtf8(text);
@@ -386,25 +482,25 @@ bool EditorView::FindNext(const std::wstring& text, bool matchCase, bool wholeWo
   LRESULT start = SendMessage(hwnd_, SCI_GETSELECTIONEND, 0, 0);
   LRESULT end = docLength;
 
-  if (!forward)
+  if (!options.forward)
   {
     start = SendMessage(hwnd_, SCI_GETSELECTIONSTART, 0, 0);
     end = 0;
   }
 
   int flags = 0;
-  if (matchCase)
+  if (options.matchCase)
   {
     flags |= SCFIND_MATCHCASE;
   }
-  if (wholeWord)
+  if (options.wholeWord)
   {
     flags |= SCFIND_WHOLEWORD;
   }
 
   SendMessage(hwnd_, SCI_SETSEARCHFLAGS, flags, 0);
 
-  if (forward)
+  if (options.forward)
   {
     SendMessage(hwnd_, SCI_SETTARGETSTART, start, 0);
     SendMessage(hwnd_, SCI_SETTARGETEND, end, 0);
@@ -464,8 +560,25 @@ bool EditorView::FindNext(const std::wstring& text, bool matchCase, bool wholeWo
   return true;
 }
 
+bool EditorView::FindNextInBuffer(const std::wstring& text, const SearchOptions& options)
+{
+  const std::string buffer = GetTextUtf8();
+  const size_t caretStart = static_cast<size_t>(SendMessage(hwnd_, SCI_GETSELECTIONSTART, 0, 0));
+  const size_t caretEnd = static_cast<size_t>(SendMessage(hwnd_, SCI_GETSELECTIONEND, 0, 0));
+  SearchMatch match{};
+  std::string error;
+  if (!EditorSearch::FindNextInText(buffer, caretStart, caretEnd, text, options, &match, &error))
+  {
+    return false;
+  }
+
+  SendMessage(hwnd_, SCI_SETSEL, static_cast<WPARAM>(match.start), static_cast<LPARAM>(match.end));
+  SendMessage(hwnd_, SCI_SCROLLCARET, 0, 0);
+  return true;
+}
+
 bool EditorView::ReplaceSelection(const std::wstring& findText, const std::wstring& replaceText,
-                                  bool matchCase, bool wholeWord)
+                                  bool matchCase, bool wholeWord, bool regex)
 {
   if (!hwnd_)
   {
@@ -476,7 +589,12 @@ bool EditorView::ReplaceSelection(const std::wstring& findText, const std::wstri
   const LRESULT selEnd = SendMessage(hwnd_, SCI_GETSELECTIONEND, 0, 0);
   if (selStart == selEnd)
   {
-    if (!FindNext(findText, matchCase, wholeWord, true))
+    SearchOptions options;
+    options.matchCase = matchCase;
+    options.wholeWord = wholeWord;
+    options.regex = regex;
+    options.forward = true;
+    if (!FindNext(findText, options))
     {
       return false;
     }
@@ -488,11 +606,30 @@ bool EditorView::ReplaceSelection(const std::wstring& findText, const std::wstri
 }
 
 int EditorView::ReplaceAll(const std::wstring& findText, const std::wstring& replaceText,
-                           bool matchCase, bool wholeWord)
+                           bool matchCase, bool wholeWord, bool regex)
 {
   if (!hwnd_ || findText.empty())
   {
     return 0;
+  }
+
+  if (regex)
+  {
+    std::string buffer = GetTextUtf8();
+    SearchOptions options;
+    options.matchCase = matchCase;
+    options.wholeWord = wholeWord;
+    options.regex = true;
+    std::string error;
+    SendMessage(hwnd_, SCI_BEGINUNDOACTION, 0, 0);
+    const int count =
+        EditorSearch::ReplaceAllInText(buffer, findText, replaceText, options, &error);
+    if (count > 0)
+    {
+      SetTextUtf8(buffer);
+    }
+    SendMessage(hwnd_, SCI_ENDUNDOACTION, 0, 0);
+    return count;
   }
 
   const std::string needle = WideToUtf8(findText);
@@ -601,4 +738,304 @@ std::string EditorView::GetFirstLineUtf8() const
   }
 
   return line;
+}
+
+void EditorView::OnEditorNotify(const SCNotification& notification)
+{
+  if (!hwnd_ || !settings_.autoIndent)
+  {
+    return;
+  }
+
+  if (notification.nmhdr.code == SCN_CHARADDED && notification.ch == '\n')
+  {
+    ApplyAutoIndentForNewLine();
+  }
+}
+
+void EditorView::ApplyAutoIndentForNewLine()
+{
+  const LRESULT currentLine = SendMessage(hwnd_, SCI_LINEFROMPOSITION,
+                                          SendMessage(hwnd_, SCI_GETCURRENTPOS, 0, 0), 0);
+  if (currentLine <= 0)
+  {
+    return;
+  }
+
+  const LRESULT prevLength = SendMessage(hwnd_, SCI_LINELENGTH, currentLine - 1, 0);
+  std::string previousLine(static_cast<size_t>(prevLength), '\0');
+  SendMessage(hwnd_, SCI_GETLINE, currentLine - 1, reinterpret_cast<LPARAM>(previousLine.data()));
+  const std::string indent = IndentLogic::ComputeNewLineIndent(
+      previousLine, settings_.tabSize, settings_.tabToSpaces);
+  if (!indent.empty())
+  {
+    SendMessage(hwnd_, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>(indent.c_str()));
+  }
+}
+
+void EditorView::InsertTab()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  if (settings_.tabToSpaces)
+  {
+    const std::string spaces(settings_.tabSize, ' ');
+    SendMessage(hwnd_, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>(spaces.c_str()));
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>("\t"));
+}
+
+void EditorView::ConvertSelectionTabsToSpaces()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  const LRESULT start = SendMessage(hwnd_, SCI_GETSELECTIONSTART, 0, 0);
+  const LRESULT end = SendMessage(hwnd_, SCI_GETSELECTIONEND, 0, 0);
+  if (start == end)
+  {
+    return;
+  }
+
+  std::string text = GetTextUtf8();
+  std::string segment = text.substr(static_cast<size_t>(start), static_cast<size_t>(end - start));
+  std::string replaced;
+  replaced.reserve(segment.size() * settings_.tabSize);
+  for (char ch : segment)
+  {
+    if (ch == '\t')
+    {
+      replaced.append(static_cast<size_t>(settings_.tabSize), ' ');
+    }
+    else
+    {
+      replaced.push_back(ch);
+    }
+  }
+
+  SendMessage(hwnd_, SCI_SETSEL, start, end);
+  SendMessage(hwnd_, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>(replaced.c_str()));
+}
+
+void EditorView::ConvertSelectionSpacesToTabs()
+{
+  InsertTab();
+}
+
+void EditorView::SetBraceMatching(bool enabled)
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_BRACEHIGHLIGHT, enabled ? 1 : 0, 0);
+}
+
+bool EditorView::GotoMatchingBrace()
+{
+  if (!hwnd_)
+  {
+    return false;
+  }
+
+  const LRESULT pos = SendMessage(hwnd_, SCI_GETCURRENTPOS, 0, 0);
+  const LRESULT match = SendMessage(hwnd_, SCI_BRACEMATCH, pos, 0);
+  if (match < 0)
+  {
+    return false;
+  }
+
+  SendMessage(hwnd_, SCI_GOTOPOS, match, 0);
+  SendMessage(hwnd_, SCI_SETSEL, match, match);
+  return true;
+}
+
+void EditorView::DuplicateLine()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_LINECOPY, 0, 0);
+  const LRESULT line = SendMessage(hwnd_, SCI_LINEFROMPOSITION,
+                                   SendMessage(hwnd_, SCI_GETCURRENTPOS, 0, 0), 0);
+  const LRESULT lineEnd = SendMessage(hwnd_, SCI_GETLINEENDPOSITION, line, 0);
+  SendMessage(hwnd_, SCI_SETSEL, lineEnd, lineEnd);
+  SendMessage(hwnd_, SCI_PASTE, 0, 0);
+}
+
+void EditorView::DeleteLine()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_LINEDELETE, 0, 0);
+}
+
+void EditorView::MoveLineUp()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_MOVESELECTEDLINESUP, 0, 0);
+}
+
+void EditorView::MoveLineDown()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  SendMessage(hwnd_, SCI_MOVESELECTEDLINESDOWN, 0, 0);
+}
+
+int EditorView::TrimTrailingWhitespace()
+{
+  if (!hwnd_)
+  {
+    return 0;
+  }
+
+  int trimmedLines = 0;
+  const LRESULT lineCount = SendMessage(hwnd_, SCI_GETLINECOUNT, 0, 0);
+  SendMessage(hwnd_, SCI_BEGINUNDOACTION, 0, 0);
+  for (LRESULT line = 0; line < lineCount; ++line)
+  {
+    const LRESULT length = SendMessage(hwnd_, SCI_LINELENGTH, line, 0);
+    if (length <= 0)
+    {
+      continue;
+    }
+
+    std::string text(static_cast<size_t>(length), '\0');
+    SendMessage(hwnd_, SCI_GETLINE, line, reinterpret_cast<LPARAM>(text.data()));
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+    {
+      text.pop_back();
+    }
+
+    const LRESULT lineStart = SendMessage(hwnd_, SCI_POSITIONFROMLINE, line, 0);
+    const LRESULT lineEnd = SendMessage(hwnd_, SCI_GETLINEENDPOSITION, line, 0);
+    if (static_cast<size_t>(lineEnd - lineStart) != text.size())
+    {
+      SendMessage(hwnd_, SCI_SETTARGETSTART, lineStart, 0);
+      SendMessage(hwnd_, SCI_SETTARGETEND, lineEnd, 0);
+      SendMessage(hwnd_, SCI_REPLACETARGET, static_cast<WPARAM>(text.size()),
+                  reinterpret_cast<LPARAM>(text.c_str()));
+      ++trimmedLines;
+    }
+  }
+  SendMessage(hwnd_, SCI_ENDUNDOACTION, 0, 0);
+  return trimmedLines;
+}
+
+void EditorView::ZoomDelta(int steps)
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  if (steps > 0)
+  {
+    for (int i = 0; i < steps; ++i)
+    {
+      SendMessage(hwnd_, SCI_ZOOMIN, 0, 0);
+    }
+  }
+  else if (steps < 0)
+  {
+    for (int i = 0; i < -steps; ++i)
+    {
+      SendMessage(hwnd_, SCI_ZOOMOUT, 0, 0);
+    }
+  }
+
+  settings_.zoom = static_cast<int>(SendMessage(hwnd_, SCI_GETZOOM, 0, 0));
+}
+
+int EditorView::GetZoom() const
+{
+  if (!hwnd_)
+  {
+    return 0;
+  }
+
+  return static_cast<int>(SendMessage(hwnd_, SCI_GETZOOM, 0, 0));
+}
+
+void EditorView::ClearFindHighlights()
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  const LRESULT length = SendMessage(hwnd_, SCI_GETLENGTH, 0, 0);
+  SendMessage(hwnd_, SCI_SETINDICATORCURRENT, 0, 0);
+  SendMessage(hwnd_, SCI_INDICATORCLEARRANGE, 0, length);
+}
+
+void EditorView::UpdateFindHighlights(const std::wstring& query, const SearchOptions& options)
+{
+  ClearFindHighlights();
+  if (!hwnd_ || query.empty())
+  {
+    return;
+  }
+
+  std::string error;
+  const std::vector<SearchMatch> matches =
+      EditorSearch::FindAllInText(GetTextUtf8(), query, options, &error);
+  SendMessage(hwnd_, SCI_SETINDICATORCURRENT, 0, 0);
+  for (const SearchMatch& match : matches)
+  {
+    SendMessage(hwnd_, SCI_INDICATORFILLRANGE, static_cast<WPARAM>(match.start),
+                static_cast<LPARAM>(match.end - match.start));
+  }
+}
+
+void EditorView::ConfigureFolding()
+{
+  SendMessage(hwnd_, SCI_SETPROPERTY, reinterpret_cast<WPARAM>("fold"), reinterpret_cast<LPARAM>("1"));
+  SendMessage(hwnd_, SCI_SETMARGINTYPEN, 1, SC_MARGIN_SYMBOL);
+  SendMessage(hwnd_, SCI_SETMARGINWIDTHN, 1, 16);
+  SendMessage(hwnd_, SCI_SETMARGINMASKN, 1, SC_MASK_FOLDERS);
+  SendMessage(hwnd_, SCI_SETFOLDFLAGS, 0, SC_FOLDFLAG_LINEAFTER_CONTRACTED);
+}
+
+void EditorView::EnableCodeFolding(bool enabled)
+{
+  if (!hwnd_)
+  {
+    return;
+  }
+
+  if (enabled)
+  {
+    ConfigureFolding();
+    const LRESULT lineCount = SendMessage(hwnd_, SCI_GETLINECOUNT, 0, 0);
+    for (LRESULT line = 0; line < lineCount; ++line)
+    {
+      SendMessage(hwnd_, SCI_SETFOLDLEVEL, line, SC_FOLDLEVELBASE);
+    }
+  }
+  else
+  {
+    SendMessage(hwnd_, SCI_SETMARGINWIDTHN, 1, 0);
+  }
 }
